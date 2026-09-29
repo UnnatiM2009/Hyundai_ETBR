@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unnati Hyundai — Performance Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚗</text></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<script src="/assets/js/vendor/chart.umd.js"></script>
+<link rel="stylesheet" href="/assets/css/style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">H</span>
+      <div class="brand-text">
+        <strong>Unnati Hyundai</strong>
+        <span id="dealerCode">Dealership Performance Console</span>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-link active" data-section="overview">Overview</button>
+      <button class="nav-link" data-section="enquiry">Enquiry</button>
+      <button class="nav-link" data-section="testdrive">Test Drive</button>
+      <button class="nav-link" data-section="booking">Booking</button>
+      <button class="nav-link" data-section="sales">Retails</button>
+      <button class="nav-link" data-section="comparison">Month Comparison</button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <label class="field-label" for="periodSelect">Viewing period</label>
+      <select id="periodSelect" class="period-select"></select>
+
+      <button id="uploadBtn" class="ghost-btn">Update monthly data</button>
+      <button id="refreshBtn" class="ghost-btn">Refresh</button>
+
+      <div class="sync-line">
+        <span class="dot" id="syncDot"></span>
+        <span id="lastSync">Loading…</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+
+    <header class="topbar">
+      <button id="menuToggle" class="menu-toggle" aria-label="Toggle menu">☰</button>
+      <div class="topbar-title">
+        <span class="dealer-tag">Unnati Hyundai</span>
+        <h1 id="pageTitle">Overview</h1>
+        <p id="pageSubtitle">Performance snapshot for the selected period</p>
+      </div>
+      <button id="themeToggle" class="ghost-btn theme-btn" title="Toggle theme">◐</button>
+    </header>
+
+    <!-- ---------- OVERVIEW ---------- -->
+    <section class="view active" id="view-overview">
+      <div class="kpi-grid" id="kpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Enquiry → Booking → Retail funnel</h3>
+            <p>Where this period's enquiries ended up</p>
+          </div>
+          <div id="overviewFunnel" class="funnel"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Test drive completion</h3>
+            <p>Column O of the enquiry sheet — done (Y) vs pending (N)</p>
+          </div>
+          <div class="gauge-wrap">
+            <svg id="gaugeSvg" viewBox="0 0 220 130" class="gauge">
+              <path id="gaugeTrack" d="M 20 120 A 90 90 0 0 1 200 120" />
+              <path id="gaugeFill" d="M 20 120 A 90 90 0 0 1 200 120" />
+              <line id="gaugeNeedle" x1="110" y1="120" x2="110" y2="40" />
+              <circle cx="110" cy="120" r="7" class="gauge-hub"/>
+            </svg>
+            <div class="gauge-readout">
+              <span id="gaugeValue">0%</span>
+              <span class="gauge-caption" id="gaugeCaption">0 of 0 enquiries test-driven</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Top models by enquiry volume</h3>
+          </div>
+          <div class="chart-box"><canvas id="overviewModelsChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Enquiry source mix</h3>
+          </div>
+          <div class="chart-box"><canvas id="overviewSourceChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- ENQUIRY ---------- -->
+    <section class="view" id="view-enquiry">
+      <div class="kpi-grid" id="enqKpiGrid"></div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Enquiry status breakdown</h3></div>
+          <div class="chart-box"><canvas id="enqStatusChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Enquiry ageing</h3><p>Days open, bucketed</p></div>
+          <div class="chart-box"><canvas id="enqAgingChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Top cities</h3></div>
+          <div class="chart-box"><canvas id="enqCityChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Lost reasons</h3></div>
+          <div class="chart-box"><canvas id="enqLostChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- TEST DRIVE ---------- -->
+    <section class="view" id="view-testdrive">
+      <div class="kpi-grid" id="tdKpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel accent-amber">
+          <div class="panel-head">
+            <h3>Test drive: done vs not done</h3>
+            <p>Direct read of the Test Drive (Y/N) field</p>
+          </div>
+          <div class="chart-box"><canvas id="tdDoneChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Daily test drives this period</h3>
+          </div>
+          <div class="chart-box"><canvas id="tdTrendChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Test drives by model</h3>
+          </div>
+          <div class="chart-box"><canvas id="tdModelChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Test drives by consultant</h3>
+          </div>
+          <div class="chart-box"><canvas id="tdConsultantChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Test drives by source</h3>
+          </div>
+          <div class="chart-box"><canvas id="tdSourceChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>From test drive to sale</h3>
+            <p>How far test-driven customers progressed, matched by customer ID</p>
+          </div>
+          <div id="tdFunnel" class="funnel"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- BOOKING ---------- -->
+    <section class="view" id="view-booking">
+      <div class="kpi-grid" id="bookKpiGrid"></div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Mode of purchase</h3></div>
+          <div class="chart-box"><canvas id="bookModeChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Bookings by model</h3></div>
+          <div class="chart-box"><canvas id="bookModelChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Bookings by consultant</h3></div>
+          <div class="chart-box"><canvas id="bookConsultantChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Daily booking trend</h3></div>
+          <div class="chart-box"><canvas id="bookTrendChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- SALES ---------- -->
+    <section class="view" id="view-sales">
+      <div class="kpi-grid" id="salesKpiGrid"></div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Revenue by model</h3></div>
+          <div class="chart-box"><canvas id="salesRevenueChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Units retailed by model</h3></div>
+          <div class="chart-box"><canvas id="salesUnitsChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Revenue trend</h3></div>
+          <div class="chart-box"><canvas id="salesTrendChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Retail source mix</h3></div>
+          <div class="chart-box"><canvas id="salesSourceChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- COMPARISON ---------- -->
+    <section class="view" id="view-comparison">
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="comparisonTitle">Month-over-month comparison</h3>
+          <p id="comparisonSubtitle">How this period compares with the one before it</p>
+        </div>
+
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="cmpMonth">Month</label>
+            <select id="cmpMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="cmpModel">Model</label>
+            <select id="cmpModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cmpConsultant">Consultant</label>
+            <select id="cmpConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cmpSource">Source</label>
+            <select id="cmpSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="cmpReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="comparison-table" id="comparisonTable">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th id="colPrev">Previous month</th>
+                <th id="colCurr">Current month</th>
+                <th>Change</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="hint" id="comparisonHint"></p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ================= UPLOAD MODAL ================= -->
+<div class="modal-backdrop" id="uploadModal">
+  <div class="modal">
+    <h3>Update monthly data</h3>
+    <p>Replace one or more workbooks with a fresh export. Everything recalculates immediately, and the current vs. previous month comparison updates automatically.</p>
+    <form id="uploadForm">
+      <label class="upload-row">
+        <span>Enquiry.xlsx</span>
+        <input type="file" name="enquiry" accept=".xlsx,.xlsm">
+      </label>
+      <label class="upload-row">
+        <span>Booking.xlsx</span>
+        <input type="file" name="booking" accept=".xlsx,.xlsm">
+      </label>
+      <label class="upload-row">
+        <span>SalesReport.xlsx</span>
+        <input type="file" name="sales" accept=".xlsx,.xlsm">
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="ghost-btn" id="cancelUpload">Cancel</button>
+        <button type="submit" class="primary-btn" id="submitUpload">Upload &amp; recalculate</button>
+      </div>
+      <p class="modal-msg" id="uploadMsg"></p>
+    </form>
+  </div>
+</div>
+
+<script src="/assets/js/app.js"></script>
+</body>
+</html>
