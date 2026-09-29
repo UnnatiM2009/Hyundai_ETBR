@@ -659,7 +659,7 @@ async function loadMeta() {
 
   document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)}`;
   document.getElementById("dealerCode").textContent =
-    `${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
+    `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
 
 /* ---------------------------------------------------------------------- */
