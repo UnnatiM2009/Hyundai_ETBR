@@ -99,6 +99,9 @@ revenue, amount received, mode of purchase, invoice-to-delivery days.
 - **Overview** — KPIs (with vs-last-month deltas), Enquiry → Booking → Retail funnel,
   test-drive gauge, top models, source mix, conversion tables.
 - **Enquiry** — status breakdown, **Appointed Enquiry** card, ageing, cities, lost reasons.
+  The **Enquiry aging days** dropdown (from the `enquiry aging days` column) narrows the whole
+  page to an age range (0-7 / 8-15 / 16-30 / 31+ days) or to one exact age in days; the cards,
+  charts and breakdown table all follow it (month-on-month deltas are hidden while it is set).
 - **Enquiry Follow-up** *(new)* — set the "Follow-up date (today)" (defaults to today):
   - cards: **Due today**, **Previous days pending**, **Upcoming (7 days)**, **Open follow-ups**,
     **Enquiry Follow up Cancel**, **Appointed Enquiry Cancel**
@@ -113,6 +116,15 @@ revenue, amount received, mode of purchase, invoice-to-delivery days.
 - **Booking** — Total bookings, **Booking Cancel** card, booking → retail, by source / model /
   consultant, daily trend, booking-cancel reasons and cancels by model.
 - **Retails** — vehicles sold by model, consultant, source and daily trend.
+- **Exchange** *(new)* — read from the Enquiry sheet's exchange columns (AM onwards): **Exchange
+  opted**, **Scrap Y/N**, **Scrap Through Hyundai Y/N**, **Present Car**, **Maker Name**, **Maker
+  Model**, **Model Year**. Cards (exchange opted and %, present car owners, scrap, scrap through
+  Hyundai, exchange customers who went on to Book/Retail, average present-car age), Y/N charts,
+  maker / maker-model / model-year charts, exchange by the model enquired, a customer-wise
+  detail table (Exchange opted · All present car owners · All enquiries) and the usual
+  Model / Consultant / Source breakdown. Maker spellings are merged (HONDA = Honda).
+  Note: the scrap questions are only filled for exchange customers, so Scrap charts are
+  counted among exchange-opted customers.
 - **Enquiry Wise Stock** *(new)* — see below.
 - **Month Comparison** — every key metric, previous vs current month, filterable.
 

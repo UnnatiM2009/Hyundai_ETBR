@@ -77,6 +77,12 @@ _TEXT_COLUMNS = {
     "Consultant Name": "Unassigned", "City": "Unknown", "lost reason": "", "Lost Remark": "",
     "Consultant Remarks": "",
 }
+_YN_COLUMNS = ["Exchange opted", "Scrap Y/N", "Scrap Through Hyundai Y/N", "Present Car"]
+_EXCHANGE_TEXT = ["Maker Name", "Maker Model"]
+
+# Enquiry-age buckets for the Enquiry page dropdown (value, label, low, high)
+AGE_BUCKETS = [("0-7", "0-7 days", 0, 7), ("8-15", "8-15 days", 8, 15),
+               ("16-30", "16-30 days", 16, 30), ("31plus", "31+ days", 31, 10_000)]
 _DATE_COLUMNS = ["Enquiry Date", "Next Followup Date", "Lost Date", "Booking Date", "Retail date"]
 
 
@@ -180,12 +186,41 @@ def _text(value) -> str:
     return "" if s.lower() in ("nan", "none", "nat") else s
 
 
+def _yn(series: pd.Series) -> pd.Series:
+    """Y / N / '' (blank) - Excel exports mix Y, Yes, N, No and empty cells."""
+    t = series.astype(str).str.strip().str.upper()
+    return t.map(lambda v: "Y" if v in ("Y", "YES") else ("N" if v in ("N", "NO") else ""))
+
+
+def _canon(series: pd.Series) -> pd.Series:
+    """'HONDA' / 'Honda' / 'honda' -> one spelling (the most common one)."""
+    clean = series.map(_text)
+    best = {}
+    for key, grp in clean[clean != ""].groupby(clean[clean != ""].str.casefold()):
+        best[key] = grp.value_counts().index[0]
+    return clean.map(lambda v: best.get(v.casefold(), v) if v else "")
+
+
+def _age_mask(df: pd.DataFrame, age: Optional[str]) -> pd.Series:
+    """age = 'all' | a bucket value ('8-15') | 'd:12' (exactly 12 days)."""
+    col = df["enquiry aging days"]
+    if age.startswith("d:"):
+        try:
+            return col == float(age[2:])
+        except ValueError:
+            return pd.Series(True, index=df.index)
+    for value, _label, lo, hi in AGE_BUCKETS:
+        if age == value:
+            return (col >= lo) & (col <= hi)
+    return pd.Series(True, index=df.index)
+
+
 def _empty_enquiry() -> pd.DataFrame:
     cols = list(_TEXT_COLUMNS) + _DATE_COLUMNS + [
         "Test Drive", "enquiry aging days", "Month", "Booking Month", "Retail Month", "Lost Month",
         "Status Key", "is_lost", "is_booked", "is_retail", "is_booking_cancel", "is_followup",
         "is_followup_cancel", "is_appointed", "is_appointed_cancel", "booking_days", "retail_days", "Phone",
-    ]
+    ] + _YN_COLUMNS + _EXCHANGE_TEXT + ["Model Year"]
     return pd.DataFrame(columns=cols)
 
 
@@ -247,6 +282,14 @@ class DashboardData:
                        .map(_text))
 
         df["enquiry aging days"] = pd.to_numeric(df.get("enquiry aging days"), errors="coerce").fillna(0)
+
+        # ---- exchange details (Exchange opted ... Model Year) ----
+        for name in _YN_COLUMNS:
+            df[name] = _yn(df[name]) if name in df.columns else ""
+        for name in _EXCHANGE_TEXT:
+            df[name] = _canon(df[name]) if name in df.columns else ""
+        df["Model Year"] = pd.to_numeric(df["Model Year"], errors="coerce") if "Model Year" in df.columns \
+            else float("nan")
 
         # ---- status flags: the whole Booking / Retail / Follow-up story lives here ----
         sk = df["Enquiry Status"].map(_skey)
@@ -331,7 +374,8 @@ class DashboardData:
     # ------------------------------------------------------------------- #
     def _filter(self, df: pd.DataFrame, period: Optional[str],
                 model: Optional[str] = None, consultant: Optional[str] = None,
-                source: Optional[str] = None, month_col: str = "Month") -> pd.DataFrame:
+                source: Optional[str] = None, month_col: str = "Month",
+                age: Optional[str] = None) -> pd.DataFrame:
         """Filter by month (on `month_col`) plus the optional Model / Consultant /
         Source drill-down filters."""
         if df.empty:
@@ -345,6 +389,8 @@ class DashboardData:
             d = d[d["Consultant Name"] == consultant]
         if source and source != "all":
             d = d[d["Source"] == source]
+        if age and age != "all":
+            d = d[_age_mask(d, age)]
         return d
 
     # Each kind of event is a slice of the one Enquiry sheet, counted by its own date.
@@ -359,23 +405,27 @@ class DashboardData:
     }
 
     def view(self, kind: str, period: Optional[str], model: Optional[str] = None,
-             consultant: Optional[str] = None, source: Optional[str] = None) -> pd.DataFrame:
+             consultant: Optional[str] = None, source: Optional[str] = None,
+             age: Optional[str] = None) -> pd.DataFrame:
         flag, month_col = self._KIND_SPEC[kind]
         df = self.enquiry
         if df.empty:
             return df
         if flag:
             df = df[df[flag]]
-        return self._filter(df, period, model, consultant, source, month_col=month_col)
+        return self._filter(df, period, model, consultant, source, month_col=month_col, age=age)
 
     # ------------------------------------------------------------------- #
     def filter_options(self) -> dict:
         """Distinct Model / Consultant / Source values, for the UI dropdown filters."""
         e = self.enquiry
         clean = lambda vals: sorted(v for v in vals if v and v.lower() not in ("nan", "none", "", "unknown"))
+        ages = {"buckets": [{"value": v, "label": l} for v, l, _lo, _hi in AGE_BUCKETS], "days": []}
         if e.empty:
-            return {"models": [], "consultants": [], "sources": []}
+            return {"models": [], "consultants": [], "sources": [], "ages": ages}
+        ages["days"] = sorted(int(x) for x in e["enquiry aging days"].dropna().unique())
         return {
+            "ages": ages,
             "models": clean(set(e["Model"].dropna().astype(str).str.strip())),
             "consultants": clean(set(e["Consultant Name"].dropna().astype(str).str.strip())),
             "sources": clean(set(e["Source"].dropna().astype(str).str.strip())),
@@ -391,13 +441,14 @@ store = DashboardData()
 # --------------------------------------------------------------------------- #
 
 def compute_kpis(period: Optional[str], model: Optional[str] = None,
-                 consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
-    enq = store.view("enquiry", period, model, consultant, source)
-    booked = store.view("booked", period, model, consultant, source)
-    retail = store.view("retail", period, model, consultant, source)
-    b_cancel = store.view("booking_cancel", period, model, consultant, source)
-    f_cancel = store.view("followup_cancel", period, model, consultant, source)
-    a_cancel = store.view("appointed_cancel", period, model, consultant, source)
+                 consultant: Optional[str] = None, source: Optional[str] = None,
+                 age: Optional[str] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, age=age)
+    booked = store.view("booked", period, model, consultant, source, age=age)
+    retail = store.view("retail", period, model, consultant, source, age=age)
+    b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age)
+    f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age)
+    a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age)
 
     total_enquiries = len(enq)
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
@@ -539,9 +590,118 @@ def compute_test_drive_analytics(period: Optional[str], model: Optional[str] = N
     }
 
 
-def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None,
-                              consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+EXCHANGE_SCOPES = ("exchange", "present", "all")
+
+
+def _year_bucket(y) -> str:
+    if pd.isna(y):
+        return "Not stated"
+    y = int(y)
+    if y >= 2023:
+        return "2023 & newer"
+    if y >= 2018:
+        return "2018-2022"
+    if y >= 2013:
+        return "2013-2017"
+    return "2012 & older"
+
+
+def compute_exchange_analytics(period: Optional[str], model: Optional[str] = None,
+                               consultant: Optional[str] = None, source: Optional[str] = None,
+                               scope: str = "exchange", limit: int = 1000) -> dict:
+    """Exchange page: Exchange opted / Scrap Y/N / Scrap Through Hyundai Y/N / Present Car /
+    Maker Name / Maker Model / Model Year, read straight from the Enquiry sheet."""
     enq = store.view("enquiry", period, model, consultant, source)
+    empty = {
+        "kpis": {"total_enquiries": 0, "exchange_opted": 0, "exchange_rate": 0.0, "present_car": 0,
+                 "scrap_yes": 0, "scrap_no": 0, "scrap_hyundai_yes": 0, "exchange_converted": 0,
+                 "avg_car_age": 0.0},
+        "exchange_split": {"Y": 0, "N": 0}, "present_split": {"Y": 0, "N": 0},
+        "scrap_split": [], "scrap_hyundai_split": [], "by_maker": [], "by_maker_model": [],
+        "by_year": [], "by_model": [], "by_consultant": [], "rows": [], "row_total": 0, "scope": scope,
+    }
+    if enq.empty:
+        return empty
+
+    ex = enq[enq["Exchange opted"] == "Y"]
+    present = enq[enq["Present Car"] == "Y"]
+    this_year = int(pd.Timestamp.today().year)
+    yrs = present["Model Year"].dropna()
+    kpis = {
+        "total_enquiries": len(enq),
+        "exchange_opted": len(ex),
+        "exchange_rate": _safe_div(len(ex), len(enq)),
+        "present_car": len(present),
+        "scrap_yes": int((enq["Scrap Y/N"] == "Y").sum()),
+        "scrap_no": int((enq["Scrap Y/N"] == "N").sum()),
+        "scrap_hyundai_yes": int((enq["Scrap Through Hyundai Y/N"] == "Y").sum()),
+        # exchange customers who went on to Book or Retail
+        "exchange_converted": int((ex["is_booked"] | ex["is_retail"]).sum()) if len(ex) else 0,
+        "avg_car_age": round(float((this_year - yrs).mean()), 1) if len(yrs) else 0.0,
+    }
+
+    def _split(col, labels):
+        vc = enq[col].value_counts()
+        return [{"label": lab, "value": int(vc.get(key, 0))} for key, lab in labels if int(vc.get(key, 0)) > 0]
+
+    scrap_labels = [("Y", "Scrap - Yes"), ("N", "Scrap - No"), ("", "Not stated")]
+    # Scrap questions only apply to exchange customers, so 'not stated' is counted inside that group
+    scrap_base = ex if len(ex) else enq.iloc[0:0]
+    sv = scrap_base["Scrap Y/N"].value_counts()
+    scrap_split = [{"label": lab, "value": int(sv.get(k, 0))} for k, lab in scrap_labels if int(sv.get(k, 0)) > 0]
+    hv = scrap_base[scrap_base["Scrap Y/N"] == "Y"]["Scrap Through Hyundai Y/N"].value_counts()
+    scrap_hyundai_split = [
+        {"label": lab, "value": int(hv.get(k, 0))}
+        for k, lab in (("Y", "Through Hyundai"), ("N", "Not through Hyundai"), ("", "Not stated"))
+        if int(hv.get(k, 0)) > 0
+    ]
+
+    makers = present[present["Maker Name"] != ""]
+    mm = makers[makers["Maker Model"] != ""].assign(_mm=lambda d: d["Maker Name"] + " " + d["Maker Model"])
+    by_year = present["Model Year"].dropna().astype(int).value_counts().sort_index()
+
+    # ---- detail list ----
+    if scope == "present":
+        rows_df = present
+    elif scope == "all":
+        rows_df = enq
+    else:
+        scope = "exchange"
+        rows_df = ex
+    rows_df = rows_df.sort_values("Enquiry Date", ascending=False)
+    rows = []
+    for _, r in rows_df.head(limit).iterrows():
+        yr = r["Model Year"]
+        rows.append({
+            "date": _fmt_date(r["Enquiry Date"]), "customer_id": r["Customer ID"],
+            "name": r["Name of the Customer"], "phone": r["Phone"], "consultant": r["Consultant Name"],
+            "status": r["Enquiry Status"], "model": r["Model"],
+            "exchange": r["Exchange opted"], "scrap": r["Scrap Y/N"],
+            "scrap_hyundai": r["Scrap Through Hyundai Y/N"], "present_car": r["Present Car"],
+            "maker": r["Maker Name"], "maker_model": r["Maker Model"],
+            "model_year": "" if pd.isna(yr) else int(yr),
+            "car_age": "" if pd.isna(yr) else max(this_year - int(yr), 0),
+        })
+
+    return {
+        "kpis": kpis,
+        "exchange_split": {"Y": len(ex), "N": len(enq) - len(ex)},
+        "present_split": {"Y": len(present), "N": len(enq) - len(present)},
+        "scrap_split": scrap_split,
+        "scrap_hyundai_split": scrap_hyundai_split,
+        "by_maker": _by_count(makers, "Maker Name", 10),
+        "by_maker_model": _by_count(mm, "_mm", 12),
+        "by_year": [{"label": str(int(y)), "value": int(v)} for y, v in by_year.items()],
+        "by_model": _by_count(ex, "Model", 10),
+        "by_consultant": _by_count(ex, "Consultant Name", 10),
+        "rows": rows, "row_total": int(len(rows_df)), "scope": scope,
+    }
+
+
+def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None,
+                              consultant: Optional[str] = None, source: Optional[str] = None,
+                 age: Optional[str] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, age=age)
     if enq.empty:
         return {"status_breakdown": [], "source_breakdown": [], "lost_reasons": [],
                 "city_breakdown": [], "aging_buckets": [], "model_breakdown": []}
@@ -696,6 +856,23 @@ def _breakdown_rows_testdrive(enq, dimension, limit):
     return rows[:limit]
 
 
+def _breakdown_rows_exchange(enq, dimension, limit):
+    col = _DIM_COLUMN[dimension]
+    if enq.empty:
+        return []
+    rows = []
+    for k, sub in enq.groupby(col):
+        cnt = len(sub)
+        ex = int((sub["Exchange opted"] == "Y").sum())
+        rows.append({
+            "label": k, "enquiries": cnt, "exchange": ex, "exchange_rate": _safe_div(ex, cnt),
+            "scrap": int((sub["Scrap Y/N"] == "Y").sum()),
+            "present_car": int((sub["Present Car"] == "Y").sum()),
+        })
+    rows.sort(key=lambda r: (r["exchange"], r["enquiries"]), reverse=True)
+    return rows[:limit]
+
+
 def _breakdown_rows_booking(book, cancel, dimension, limit):
     col = _DIM_COLUMN[dimension]
     rows = []
@@ -749,13 +926,13 @@ def _breakdown_rows_conversion(enq, book, retail, dimension, limit):
 
 def compute_breakdown_tables(section: str, period: Optional[str], model: Optional[str] = None,
                              consultant: Optional[str] = None, source: Optional[str] = None,
-                             limit: int = 20) -> dict:
+                             limit: int = 20, age: Optional[str] = None) -> dict:
     """Returns {'by_model': [...], 'by_consultant': [...], 'by_source': [...]}
     with section-appropriate columns, for the 'Breakdown' table on every page."""
-    enq = store.view("enquiry", period, model, consultant, source)
-    book = store.view("booked", period, model, consultant, source)
-    retail = store.view("retail", period, model, consultant, source)
-    cancel = store.view("booking_cancel", period, model, consultant, source)
+    enq = store.view("enquiry", period, model, consultant, source, age=age)
+    book = store.view("booked", period, model, consultant, source, age=age)
+    retail = store.view("retail", period, model, consultant, source, age=age)
+    cancel = store.view("booking_cancel", period, model, consultant, source, age=age)
 
     result = {}
     for dimension in ("model", "consultant", "source"):
@@ -769,6 +946,8 @@ def compute_breakdown_tables(section: str, period: Optional[str], model: Optiona
             rows = _breakdown_rows_booking(book, cancel, dimension, limit)
         elif section == "sales":
             rows = _breakdown_rows_sales(retail, dimension, limit)
+        elif section == "exchange":
+            rows = _breakdown_rows_exchange(enq, dimension, limit)
         elif section == "conversion":
             rows = _breakdown_rows_conversion(enq, book, retail, dimension, limit)
         else:

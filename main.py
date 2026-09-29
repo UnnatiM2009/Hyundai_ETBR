@@ -101,8 +101,9 @@ def api_kpis(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    age: Optional[str] = Query(default=None),
 ):
-    return dp.compute_kpis(_period_param(period), model=model, consultant=consultant, source=source)
+    return dp.compute_kpis(_period_param(period), model=model, consultant=consultant, source=source, age=age)
 
 
 @app.get("/api/filters")
@@ -127,10 +128,12 @@ def api_breakdown(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    age: Optional[str] = Query(default=None),
 ):
-    if section not in ("overview", "enquiry", "testdrive", "booking", "sales", "conversion"):
+    if section not in ("overview", "enquiry", "testdrive", "booking", "sales", "conversion", "exchange"):
         raise HTTPException(400, f"Unknown section '{section}'")
-    return dp.compute_breakdown_tables(section, _period_param(period), model=model, consultant=consultant, source=source)
+    return dp.compute_breakdown_tables(section, _period_param(period), model=model, consultant=consultant,
+                                       source=source, age=age)
 
 
 @app.get("/api/test-drive")
@@ -149,8 +152,24 @@ def api_enquiry(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    age: Optional[str] = Query(default=None),
 ):
-    return dp.compute_enquiry_analytics(_period_param(period), model=model, consultant=consultant, source=source)
+    return dp.compute_enquiry_analytics(_period_param(period), model=model, consultant=consultant,
+                                        source=source, age=age)
+
+
+@app.get("/api/exchange")
+def api_exchange(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    scope: str = Query(default="exchange"),
+):
+    if scope not in dp.EXCHANGE_SCOPES:
+        raise HTTPException(400, f"Unknown scope '{scope}'")
+    return dp.compute_exchange_analytics(_period_param(period), model=model, consultant=consultant,
+                                         source=source, scope=scope)
 
 
 @app.get("/api/booking")
