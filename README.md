@@ -1,4 +1,5 @@
-# Unnati Hyundai — Dealership Performance Dashboard
+# Hyundai ETBR Analysis
+### Unnati Hyundai — Dealership Performance Dashboard
 
 A self-hosted analytics dashboard for your **Enquiry**, **Booking** and **Sales Report**
 exports, built around **Test Drive tracking** (the Y/N flag in column O of the Enquiry
@@ -165,7 +166,7 @@ the running app.
 cd hyundai_dashboard
 git init
 git add .
-git commit -m "Unnati Hyundai dashboard"
+git commit -m "Hyundai ETBR Analysis dashboard"
 ```
 
 Then create a new repository on [github.com/new](https://github.com/new) (Private

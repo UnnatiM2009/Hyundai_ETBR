@@ -27,7 +27,7 @@ import data_processor as dp
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-app = FastAPI(title="Unnati Hyundai Dealership Dashboard API", version="1.0.0")
+app = FastAPI(title="Hyundai ETBR Analysis API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,7 +73,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         return Response(
             status_code=401,
             content="Authentication required.",
-            headers={"WWW-Authenticate": 'Basic realm="Unnati Hyundai Dashboard"'},
+            headers={"WWW-Authenticate": 'Basic realm="Hyundai ETBR Analysis"'},
         )
 
 

@@ -11,7 +11,7 @@
 
 services:
   - type: web
-    name: unnati-hyundai-dashboard
+    name: hyundai-etbr-analysis
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
