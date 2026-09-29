@@ -95,8 +95,13 @@ def api_meta():
 
 
 @app.get("/api/kpis")
-def api_kpis(period: Optional[str] = Query(default="current_month")):
-    return dp.compute_kpis(_period_param(period))
+def api_kpis(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_kpis(_period_param(period), model=model, consultant=consultant, source=source)
 
 
 @app.get("/api/filters")
@@ -114,24 +119,57 @@ def api_comparison(
     return dp.compute_comparison(period=month, model=model, consultant=consultant, source=source)
 
 
+@app.get("/api/breakdown")
+def api_breakdown(
+    section: str = Query(...),
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    if section not in ("overview", "enquiry", "testdrive", "booking", "sales", "conversion"):
+        raise HTTPException(400, f"Unknown section '{section}'")
+    return dp.compute_breakdown_tables(section, _period_param(period), model=model, consultant=consultant, source=source)
+
+
 @app.get("/api/test-drive")
-def api_test_drive(period: Optional[str] = Query(default="current_month")):
-    return dp.compute_test_drive_analytics(_period_param(period))
+def api_test_drive(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_test_drive_analytics(_period_param(period), model=model, consultant=consultant, source=source)
 
 
 @app.get("/api/enquiry")
-def api_enquiry(period: Optional[str] = Query(default="current_month")):
-    return dp.compute_enquiry_analytics(_period_param(period))
+def api_enquiry(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_enquiry_analytics(_period_param(period), model=model, consultant=consultant, source=source)
 
 
 @app.get("/api/booking")
-def api_booking(period: Optional[str] = Query(default="current_month")):
-    return dp.compute_booking_analytics(_period_param(period))
+def api_booking(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_booking_analytics(_period_param(period), model=model, consultant=consultant, source=source)
 
 
 @app.get("/api/sales")
-def api_sales(period: Optional[str] = Query(default="current_month")):
-    return dp.compute_sales_analytics(_period_param(period))
+def api_sales(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_sales_analytics(_period_param(period), model=model, consultant=consultant, source=source)
 
 
 @app.post("/api/refresh")

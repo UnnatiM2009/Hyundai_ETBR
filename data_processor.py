@@ -332,6 +332,7 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
         "total_revenue": round(total_revenue, 2),
         "lost_enquiries": lost_enquiries,
         "enquiry_to_booking_rate": _safe_div(total_bookings, total_enquiries),
+        "enquiry_to_retail_rate": _safe_div(total_retail, total_enquiries),
         "booking_to_retail_rate": _safe_div(total_retail, total_bookings),
         "test_drive_to_booking_rate": td_to_booking_rate,
         "avg_booking_age_days": round(avg_booking_age, 1),
@@ -359,6 +360,7 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
         ("total_retail", "Total Retail (Units Sold)"),
         ("total_revenue", "Total Revenue"),
         ("enquiry_to_booking_rate", "Enquiry to Booking Conv. (%)"),
+        ("enquiry_to_retail_rate", "Enquiry to Retail Conv. (%)"),
         ("booking_to_retail_rate", "Booking to Retail Conv. (%)"),
         ("test_drive_to_booking_rate", "Test Drive to Booking Conv. (%)"),
         ("lost_enquiries", "Lost Enquiries"),
@@ -385,8 +387,9 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
     }
 
 
-def compute_test_drive_analytics(period: Optional[str]) -> dict:
-    enq = store._filter(store.enquiry, period)
+def compute_test_drive_analytics(period: Optional[str], model: Optional[str] = None,
+                                  consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+    enq = store._filter(store.enquiry, period, model, consultant, source, source_col="Source")
     if enq.empty:
         return {
             "done_vs_not": {"Y": 0, "N": 0},
@@ -468,8 +471,9 @@ def compute_test_drive_analytics(period: Optional[str]) -> dict:
     }
 
 
-def compute_enquiry_analytics(period: Optional[str]) -> dict:
-    enq = store._filter(store.enquiry, period)
+def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None,
+                               consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+    enq = store._filter(store.enquiry, period, model, consultant, source, source_col="Source")
     if enq.empty:
         return {"status_breakdown": [], "source_breakdown": [], "lost_reasons": [],
                 "city_breakdown": [], "aging_buckets": [], "model_breakdown": []}
@@ -513,8 +517,9 @@ def compute_enquiry_analytics(period: Optional[str]) -> dict:
     }
 
 
-def compute_booking_analytics(period: Optional[str]) -> dict:
-    book = store._filter(store.booking, period)
+def compute_booking_analytics(period: Optional[str], model: Optional[str] = None,
+                               consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+    book = store._filter(store.booking, period, model, consultant, source, source_col="Main Source")
     if book.empty:
         return {"mode_of_purchase": [], "by_consultant": [], "daily_trend": [],
                 "total_amount_received": 0, "total_balance_payment": 0, "by_model": []}
@@ -544,8 +549,9 @@ def compute_booking_analytics(period: Optional[str]) -> dict:
     }
 
 
-def compute_sales_analytics(period: Optional[str]) -> dict:
-    sales = store._filter(store.sales, period)
+def compute_sales_analytics(period: Optional[str], model: Optional[str] = None,
+                             consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+    sales = store._filter(store.sales, period, model, consultant, source, source_col="Source")
     if sales.empty:
         return {"revenue_by_model": [], "units_by_model": [], "daily_trend": [],
                 "avg_delivery_days": 0, "total_revenue": 0, "by_source": []}
@@ -598,3 +604,181 @@ def compute_meta() -> dict:
             "sales": len(store.sales),
         },
     }
+
+
+# --------------------------------------------------------------------------- #
+# Breakdown tables — the "Model wise / Consultant wise / Source wise" detail
+# tables shown on every page, underneath the charts. One function per section
+# because the meaningful metrics differ (an Enquiry breakdown cares about lost
+# rate; a Sales breakdown cares about revenue and delivery time).
+# --------------------------------------------------------------------------- #
+
+_DIM_COLUMN = {
+    ("enquiry", "model"): "Model", ("enquiry", "consultant"): "Consultant Name", ("enquiry", "source"): "Source",
+    ("booking", "model"): "Model", ("booking", "consultant"): "Consultant Name", ("booking", "source"): "Main Source",
+    ("sales", "model"): "Model", ("sales", "consultant"): "Consultant Name", ("sales", "source"): "Source",
+}
+
+
+def _breakdown_rows_overview(enq, book, sales, dimension, limit):
+    dim_enq = _DIM_COLUMN[("enquiry", dimension)]
+    dim_book = _DIM_COLUMN[("booking", dimension)]
+    dim_sales = _DIM_COLUMN[("sales", dimension)]
+
+    keys = set()
+    if not enq.empty and dim_enq in enq.columns:
+        keys |= set(enq[dim_enq].dropna().unique().tolist())
+    if not book.empty and dim_book in book.columns:
+        keys |= set(book[dim_book].dropna().unique().tolist())
+    if not sales.empty and dim_sales in sales.columns:
+        keys |= set(sales[dim_sales].dropna().unique().tolist())
+
+    rows = []
+    for k in keys:
+        e_cnt = int((enq[dim_enq] == k).sum()) if not enq.empty else 0
+        b_cnt = int((book[dim_book] == k).sum()) if not book.empty else 0
+        s_sub = sales[sales[dim_sales] == k] if not sales.empty else sales
+        s_cnt = int(len(s_sub)) if s_sub is not None else 0
+        revenue = float(s_sub["Invoice Price"].sum()) if s_sub is not None and not s_sub.empty else 0.0
+        rows.append({
+            "label": k, "enquiries": e_cnt, "bookings": b_cnt,
+            "retail": s_cnt, "revenue": round(revenue, 2),
+        })
+    rows.sort(key=lambda r: (r["enquiries"], r["revenue"]), reverse=True)
+    return rows[:limit]
+
+
+def _breakdown_rows_enquiry(enq, dimension, limit):
+    dim = _DIM_COLUMN[("enquiry", dimension)]
+    if enq.empty or dim not in enq.columns:
+        return []
+    rows = []
+    for k, sub in enq.groupby(dim):
+        cnt = len(sub)
+        td = int((sub["Test Drive"] == "Y").sum())
+        lost = int(sub["is_lost"].sum())
+        rows.append({
+            "label": k, "enquiries": cnt, "test_drives": td,
+            "test_drive_rate": _safe_div(td, cnt), "lost": lost, "lost_rate": _safe_div(lost, cnt),
+        })
+    rows.sort(key=lambda r: r["enquiries"], reverse=True)
+    return rows[:limit]
+
+
+def _breakdown_rows_testdrive(enq, period, dimension, limit):
+    dim = _DIM_COLUMN[("enquiry", dimension)]
+    if enq.empty or dim not in enq.columns:
+        return []
+    book_period = store._filter(store.booking, period)
+    book_ids = set(book_period["Customer ID"].dropna()) if not book_period.empty else set()
+
+    rows = []
+    for k, sub in enq.groupby(dim):
+        cnt = len(sub)
+        td_sub = sub[sub["Test Drive"] == "Y"]
+        td = len(td_sub)
+        td_ids = set(td_sub["Customer ID"].dropna()) if "Customer ID" in td_sub.columns else set()
+        booked = len(td_ids & book_ids)
+        rows.append({
+            "label": k, "enquiries": cnt, "test_drives": td,
+            "test_drive_rate": _safe_div(td, cnt), "booked_from_td": booked,
+        })
+    rows.sort(key=lambda r: r["test_drives"], reverse=True)
+    return rows[:limit]
+
+
+def _breakdown_rows_booking(book, dimension, limit):
+    dim = _DIM_COLUMN[("booking", dimension)]
+    if book.empty or dim not in book.columns:
+        return []
+    rows = []
+    for k, sub in book.groupby(dim):
+        rows.append({
+            "label": k, "bookings": len(sub),
+            "amount_received": round(float(sub["Amount Received"].sum()), 2),
+            "avg_booking_age": round(float(sub["Booking Age"].mean()), 1) if len(sub) else 0.0,
+        })
+    rows.sort(key=lambda r: r["bookings"], reverse=True)
+    return rows[:limit]
+
+
+def _breakdown_rows_sales(sales, dimension, limit):
+    dim = _DIM_COLUMN[("sales", dimension)]
+    if sales.empty or dim not in sales.columns:
+        return []
+    rows = []
+    for k, sub in sales.groupby(dim):
+        avg_delivery = sub["delivery in days"].mean()
+        rows.append({
+            "label": k, "units": len(sub),
+            "revenue": round(float(sub["Invoice Price"].sum()), 2),
+            "avg_delivery_days": round(float(avg_delivery), 1) if pd.notna(avg_delivery) else 0.0,
+        })
+    rows.sort(key=lambda r: r["revenue"], reverse=True)
+    return rows[:limit]
+
+
+def _breakdown_rows_conversion(enq, book, sales, dimension, limit):
+    """The E2T / E2B / E2R / B2R funnel conversion table, one row per
+    Model/Consultant/Source: what share of enquiries in that group went on
+    to a test drive, a booking, or a retail sale, and what share of bookings
+    converted to a retail sale."""
+    dim_enq = _DIM_COLUMN[("enquiry", dimension)]
+    dim_book = _DIM_COLUMN[("booking", dimension)]
+    dim_sales = _DIM_COLUMN[("sales", dimension)]
+
+    keys = set()
+    if not enq.empty and dim_enq in enq.columns:
+        keys |= set(enq[dim_enq].dropna().unique().tolist())
+    if not book.empty and dim_book in book.columns:
+        keys |= set(book[dim_book].dropna().unique().tolist())
+    if not sales.empty and dim_sales in sales.columns:
+        keys |= set(sales[dim_sales].dropna().unique().tolist())
+
+    rows = []
+    for k in keys:
+        e_sub = enq[enq[dim_enq] == k] if not enq.empty else enq
+        e_cnt = int(len(e_sub)) if e_sub is not None else 0
+        td_cnt = int((e_sub["Test Drive"] == "Y").sum()) if e_sub is not None and not e_sub.empty else 0
+        b_cnt = int((book[dim_book] == k).sum()) if not book.empty else 0
+        s_cnt = int((sales[dim_sales] == k).sum()) if not sales.empty else 0
+
+        rows.append({
+            "label": k,
+            "enquiries": e_cnt,
+            "e2t": _safe_div(td_cnt, e_cnt),
+            "e2b": _safe_div(b_cnt, e_cnt),
+            "e2r": _safe_div(s_cnt, e_cnt),
+            "b2r": _safe_div(s_cnt, b_cnt),
+        })
+    rows.sort(key=lambda r: r["enquiries"], reverse=True)
+    return rows[:limit]
+
+
+def compute_breakdown_tables(section: str, period: Optional[str], model: Optional[str] = None,
+                              consultant: Optional[str] = None, source: Optional[str] = None,
+                              limit: int = 20) -> dict:
+    """Returns {'by_model': [...], 'by_consultant': [...], 'by_source': [...]}
+    with section-appropriate columns, for the 'Breakdown' table on every page."""
+    enq = store._filter(store.enquiry, period, model, consultant, source, source_col="Source")
+    book = store._filter(store.booking, period, model, consultant, source, source_col="Main Source")
+    sales = store._filter(store.sales, period, model, consultant, source, source_col="Source")
+
+    result = {}
+    for dimension in ("model", "consultant", "source"):
+        if section == "overview":
+            rows = _breakdown_rows_overview(enq, book, sales, dimension, limit)
+        elif section == "enquiry":
+            rows = _breakdown_rows_enquiry(enq, dimension, limit)
+        elif section == "testdrive":
+            rows = _breakdown_rows_testdrive(enq, period, dimension, limit)
+        elif section == "booking":
+            rows = _breakdown_rows_booking(book, dimension, limit)
+        elif section == "sales":
+            rows = _breakdown_rows_sales(sales, dimension, limit)
+        elif section == "conversion":
+            rows = _breakdown_rows_conversion(enq, book, sales, dimension, limit)
+        else:
+            rows = []
+        result[f"by_{dimension}"] = rows
+    return result
