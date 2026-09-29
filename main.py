@@ -1,7 +1,8 @@
 """
 main.py
 -------
-FastAPI backend for the Hyundai Enquiry / Test-Drive / Booking / Sales dashboard.
+FastAPI backend for the Hyundai Enquiry / Test-Drive / Booking / Retail / Follow-up /
+Enquiry-wise-Stock dashboard. Booking and Retail come from the Enquiry sheet's `Enquiry Status`.
 
 Run with:  python run.py     (auto-opens the browser)
        or:  uvicorn main:app --reload
@@ -172,41 +173,143 @@ def api_sales(
     return dp.compute_sales_analytics(_period_param(period), model=model, consultant=consultant, source=source)
 
 
+@app.get("/api/followup")
+def api_followup(
+    as_of: Optional[str] = Query(default=None, description="YYYY-MM-DD; defaults to today"),
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    return dp.compute_followup(as_of, _period_param(period), model=model, consultant=consultant, source=source)
+
+
+@app.get("/api/followup/list")
+def api_followup_list(
+    scope: str = Query(default="today"),
+    as_of: Optional[str] = Query(default=None),
+    date: Optional[str] = Query(default=None, description="YYYY-MM-DD, used when scope=date"),
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+):
+    if scope not in ("today", "pending", "upcoming", "all", "date", "followup_cancel", "appointed_cancel"):
+        raise HTTPException(400, f"Unknown scope '{scope}'")
+    return dp.compute_followup_list(scope, as_of, date, _period_param(period),
+                                    model=model, consultant=consultant, source=source)
+
+
+@app.get("/api/enquiry-stock")
+def api_enquiry_stock(
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None, description="Enquiry Status to match; default = all live enquiries"),
+):
+    return dp.compute_enquiry_stock(model=model, consultant=consultant, source=source, status=status)
+
+
+@app.get("/api/enquiry-stock/export")
+def api_enquiry_stock_export(
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+):
+    try:
+        content = dp.export_enquiry_stock(model=model, consultant=consultant, source=source, status=status)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="Hyundai_Enquiry_Wise_Stock.xlsx"'},
+    )
+
+
 @app.post("/api/refresh")
 def api_refresh():
     dp.store.reload()
     return {"status": "ok", "message": "Data reloaded from disk.", "meta": dp.compute_meta()}
 
 
+def _validate_enquiry_file(path: str):
+    """The Enquiry sheet must carry the columns the whole dashboard is derived from.
+    The same workbook may also hold 'Physical Stock' and 'In Transit' sheets."""
+    import pandas as pd
+    sheet = dp.pick_enquiry_sheet(path)
+    df = pd.read_excel(path, sheet_name=sheet)
+    cols = {str(c).strip() for c in df.columns}
+    missing = [c for c in ("Enquiry Date", "Enquiry Status", "Model") if c not in cols]
+    if missing:
+        raise ValueError("this doesn't look like the Enquiry export - missing column(s): " + ", ".join(missing))
+    if df.dropna(how="all").empty:
+        raise ValueError(f"the '{sheet}' sheet has no rows")
+
+
+def _validate_stock_file(path: str):
+    import stock_engine as se
+    se.load_stock(path)   # raises ValueError with a readable message if unusable
+
+
 @app.post("/api/upload")
 async def api_upload(
     enquiry: Optional[UploadFile] = File(default=None),
-    booking: Optional[UploadFile] = File(default=None),
-    sales: Optional[UploadFile] = File(default=None),
+    stock: Optional[UploadFile] = File(default=None),
 ):
-    """Replace one or more of the source workbooks, then reload everything.
-    This is how the dealership pushes each new month's export into the
-    dashboard going forward, without touching any code."""
+    """Replace the Enquiry workbook and/or the Stock workbook, then reload everything.
+    Booking and Retail need no file of their own - they come from the Enquiry sheet's
+    `Enquiry Status` column (Booked / Retail).
+
+    Each file is checked BEFORE it replaces the current one, so a wrong file can never
+    wipe out the data that is already loaded."""
     saved = []
+    stock_from_workbook = False
     targets = {
-        "enquiry": (enquiry, dp.ENQUIRY_FILE),
-        "booking": (booking, dp.BOOKING_FILE),
-        "sales": (sales, dp.SALES_FILE),
+        "enquiry": (enquiry, dp.ENQUIRY_FILE, _validate_enquiry_file),
+        "stock": (stock, dp.STOCK_FILE, _validate_stock_file),
     }
-    for name, (upload, dest_path) in targets.items():
-        if upload is None:
+    os.makedirs(dp.DATA_DIR, exist_ok=True)
+    for name, (upload, dest_path, validate) in targets.items():
+        if upload is None or not upload.filename:
             continue
         if not upload.filename.lower().endswith((".xlsx", ".xlsm")):
             raise HTTPException(400, f"'{name}' must be an .xlsx file, got '{upload.filename}'")
-        with open(dest_path, "wb") as f:
+        tmp_path = dest_path + ".uploading"
+        with open(tmp_path, "wb") as f:
             shutil.copyfileobj(upload.file, f)
+        try:
+            validate(tmp_path)
+        except Exception as exc:
+            os.remove(tmp_path)
+            raise HTTPException(400, f"'{upload.filename}' was not loaded ({name}): {exc}. "
+                                     f"The previous {name} file is unchanged.")
+        os.replace(tmp_path, dest_path)
         saved.append(name)
+        if name == "enquiry":
+            import stock_engine as se
+            if se.has_stock_sheets(dest_path):
+                # the new workbook brings its own stock: an older separate Stock.xlsx must not shadow it
+                # (a Stock.xlsx uploaded in the same request is saved afterwards and wins)
+                if os.path.exists(dp.STOCK_FILE):
+                    os.remove(dp.STOCK_FILE)
+                stock_from_workbook = True
 
     if not saved:
         raise HTTPException(400, "No files were provided.")
 
     dp.store.reload()
-    return {"status": "ok", "updated": saved, "meta": dp.compute_meta()}
+    warning = None
+    if ("stock" in saved or stock_from_workbook) and dp.store.stock_info.get("warnings"):
+        warning = " ".join(dp.store.stock_info["warnings"])
+    if stock_from_workbook and "stock" not in saved:
+        if dp.store.stock.empty:
+            warning = ((warning + " ") if warning else "") + \
+                "The workbook's stock sheets could not be read: " + str(dp.store.stock_info.get("error", "no vehicles found"))
+        else:
+            saved.append("stock (from the workbook)")
+    return {"status": "ok", "updated": saved, "warning": warning, "meta": dp.compute_meta()}
 
 
 @app.get("/api/health")

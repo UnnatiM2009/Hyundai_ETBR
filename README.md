@@ -1,9 +1,11 @@
 # Hyundai ETBR Analysis
 ### Unnati Hyundai — Dealership Performance Dashboard
 
-A self-hosted analytics dashboard for your **Enquiry**, **Booking** and **Sales Report**
-exports, built around **Test Drive tracking** (the Y/N flag in column O of the Enquiry
-file), with automatic **current-month vs previous-month** comparison.
+A self-hosted analytics dashboard built from **one Enquiry workbook** (plus an optional
+**Stock workbook**). Booking and Retail are no longer separate exports — they are read from
+the Enquiry sheet's **Enquiry Status** column. Around that it gives you **Test Drive
+tracking** (the Y/N flag), an **Enquiry Follow-up** desk, an **Enquiry Wise Stock** page
+(Physical vs In Transit), and automatic **current-month vs previous-month** comparison.
 
 Stack: **Python + FastAPI** (backend/API) · **HTML/CSS/JavaScript + Chart.js** (frontend).
 No database. Works fully offline on your own machine, or deployed to the web (see
@@ -16,127 +18,145 @@ Section 8) — either way, mobile and desktop browsers are both fully supported.
 ```
 hyundai_dashboard/
 ├── main.py                 FastAPI app: API routes + serves the frontend
-├── data_processor.py       All data-loading & metric logic (pandas)
+├── data_processor.py       Enquiry loading, status logic, KPIs, follow-up logic (pandas)
+├── stock_engine.py         Enquiry-wise stock matching (ported from the Mahindra script)
 ├── run.py                  Local launcher — starts the server AND opens your browser
 ├── render.yaml             Render deployment blueprint (see Section 8)
 ├── requirements.txt        Python dependencies
+├── Stock_Template.xlsx     Headings the stock workbook should have (no data)
 ├── .gitignore              Keeps your real customer data out of git (see Section 8)
 ├── start_dashboard.bat     Windows: double-click to install deps + run
 ├── start_dashboard.sh      macOS/Linux: same, from a terminal
-├── data/                   Put your 3 workbooks here (already pre-loaded with yours)
-│   ├── Enquiry.xlsx
-│   ├── Booking.xlsx
-│   └── SalesReport.xlsx
-└── static/                 Frontend
-    ├── index.html
-    ├── css/style.css
-    └── js/
-        ├── app.js
-        └── vendor/chart.umd.js   (bundled locally — no CDN dependency)
+├── data/
+│   ├── Enquiry.xlsx        ONE workbook: sheets 'Enquiry', 'Physical Stock', 'In Transit'
+│   └── Stock.xlsx          (optional) only if stock is kept in a separate file
+└── static/                 Frontend (index.html, css/style.css, js/app.js, js/vendor/chart.umd.js)
 ```
 
 ## 2. Requirements
 
-- Python 3.9 or newer
-- That's it. Chart.js is bundled in the project (`static/js/vendor/`), so the dashboard
-  works with no internet connection at all once installed — including on a phone
-  connected to the same Wi-Fi as the machine it's running on.
+- Python 3.9 or newer. Chart.js is bundled, so nothing needs the internet once installed.
 
 ## 3. Running it locally
 
 **Windows** — double-click `start_dashboard.bat`.
+**macOS / Linux** — `chmod +x start_dashboard.sh && ./start_dashboard.sh`
+**Manually** — `pip install -r requirements.txt` then `python run.py`
 
-**macOS / Linux**
-```bash
-cd hyundai_dashboard
-chmod +x start_dashboard.sh      # first time only
-./start_dashboard.sh
-```
-
-**Manually, on any OS**
-```bash
-cd hyundai_dashboard
-pip install -r requirements.txt
-python run.py
-```
-
-Your browser opens automatically at `http://127.0.0.1:8000`. Leave the terminal window
-open — closing it stops the dashboard. Press `Ctrl+C` in the terminal to stop it
-yourself.
-
-If port 8000 is busy, `run.py` automatically tries the next free port and opens the
-browser to the right one.
-
-**To open it from your phone on the same Wi-Fi:** start it with `HOST=0.0.0.0 python
-run.py`, then find your computer's local IP (Windows: `ipconfig`, look for IPv4 Address;
-Mac: `ifconfig | grep inet`) and visit `http://<that-ip>:8000` from your phone's browser.
+Your browser opens at `http://127.0.0.1:8000`. To open it from a phone on the same Wi-Fi:
+`HOST=0.0.0.0 python run.py`, then visit `http://<your-computer-ip>:8000`.
 
 ## 4. Mobile support
 
-Every screen — KPI cards, charts, the test-drive gauge, the comparison table, the
-upload dialog — is responsive down to small phone widths. On narrow screens the sidebar
-becomes a slide-out menu (tap ☰ to open, tap outside it or a menu item to close), KPI
-cards drop to a 2- or 1-column grid, and wide tables scroll horizontally within their
-own box instead of the whole page. No separate "mobile site" — it's the same dashboard.
+Every screen is responsive down to small phone widths: the sidebar becomes a slide-out
+menu, KPI cards drop to 2 or 1 columns, and wide tables scroll inside their own box.
 
-## 5. Updating data every month ("henceforth")
+## 5. Updating data ("henceforth")
 
-You do **not** need to touch any code each month. Two ways to refresh:
+No code changes are needed. Either:
 
-1. **In the dashboard:** click **Update monthly data** in the sidebar, pick the new
-   `Enquiry.xlsx` / `Booking.xlsx` / `SalesReport.xlsx` (you can upload just one, two,
-   or all three), and click **Upload & recalculate**. Every chart, KPI and the
-   month-comparison table updates immediately.
-2. **On disk:** replace the files inside the `data/` folder yourself and click
-   **Refresh** in the sidebar.
+1. **In the dashboard:** sidebar → **Update monthly data**, pick the new workbook
+   (Enquiry + Physical Stock + In Transit sheets), **Upload & recalculate**. A separate Stock.xlsx is optional. Each file is checked *before* it replaces
+   the current one — a wrong file is rejected with a message and the existing data stays.
+2. **On disk:** replace the files in `data/` and click **Refresh**.
 
-### How the month comparison works
-The dashboard doesn't use today's calendar date to decide "current month" — it looks at
-the **latest date actually present** across your three files and treats that as the
-current month; the calendar month before it is "previous month." So the very first time
-you run this (with only September data, no August data), the comparison table will
-correctly show **August = 0** for everything, with a note explaining that. The moment
-you upload a file that contains — or is replaced by — the next month's export, the
-comparison starts working with real numbers on both sides, with no setup needed.
+**Month comparison:** the dashboard doesn't use today's date to decide "current month" —
+it takes the latest date present in the Enquiry sheet (enquiry, booking, retail or lost
+date) and compares it with the calendar month before. With only September data, August
+correctly shows 0 until an export containing August is loaded.
 
-The **Month Comparison** page also has its own **Month / Model / Consultant / Source**
-dropdowns, so you can compare e.g. just New Creta enquiries, or just one consultant's
-numbers, month over month — independent of whatever the rest of the dashboard is showing.
+## 6. How Enquiry Status drives everything
 
-**Tip:** for the comparison to have real history, either (a) re-export each workbook so
-it cumulatively contains all months to date, or (b) simply keep uploading each new
-month's file — the dashboard always compares the newest month it can see against the
-one before it.
+| Enquiry Status | Meaning | Counted in the month of |
+|---|---|---|
+| **Booked** | a booking | Booking Date |
+| **Retail** | a vehicle sold | Retail date |
+| **Booking Cancel** | cancelled booking | Lost Date |
+| **Enquiry Follow up** | open follow-up | (Next Followup Date drives the follow-up page) |
+| **Enquiry Follow up Cancel** | lost at follow-up | Lost Date |
+| **Appointed Enquiry** | appointment fixed | Enquiry Date |
+| **Appointed Enquiry Cancel** | appointment cancelled | Lost Date |
+| **Lead** | new lead | Enquiry Date |
 
-## 6. What each section shows
+If a Booking/Retail/Lost date is blank, the enquiry date is used instead. The mapping
+lives at the top of `data_processor.py` (`BOOKING_STATUSES`, `RETAIL_STATUSES`, …) — edit
+it there if the DMS ever renames a status.
 
-- **Overview** — headline KPIs (with vs-last-month deltas), the enquiry → booking →
-  retail funnel, a test-drive completion gauge, top models, and source mix.
-- **Enquiry** — status breakdown, ageing buckets, top cities, lost reasons.
-- **Test Drive** (the core ask) — done (Y) vs not-done (N) counts, daily trend, breakdown
-  by model / consultant / source, and a funnel showing how many test-driven customers
-  went on to book and to buy (matched by Customer ID across the three files).
-- **Booking** — mode of purchase, by consultant, by model, daily trend.
-- **Retails** — revenue and units by model, revenue trend, retail source mix.
-- **Month Comparison** — every key metric, previous month vs current month, with %
-  change, filterable by month / model / consultant / source.
+**Definitions used**
+- *Total bookings* = status **Booked**. *Units retailed* = status **Retail**.
+- *Booking → Retail %* = Retail ÷ (Booked + Retail) — Booked customers still waiting plus
+  those already sold. (Booked alone would exceed 100% once more cars are sold than are
+  currently on order.)
+- *Lost enquiries* = every status containing "Cancel" (booking, follow-up and appointed).
+- *Avg. booking age* = days from Enquiry Date to Booking Date.
+  *Avg. booking → retail* = days from Booking Date to Retail date.
 
-Use the **period selector** in the sidebar to switch any section between *Current
-month*, *Last month*, or *All available data* — the KPI cards' vs-last-month badges
-always compare the two most recent months, regardless of which period you're browsing.
+**Not available any more** (they only existed in the old Booking / SalesReport files):
+revenue, amount received, mode of purchase, invoice-to-delivery days.
 
-## 7. Data assumptions (edit `data_processor.py` if yours differ)
+## 7. What each page shows
 
-- Dates in all three files are text in `dd/mm/yyyy` format.
-- Money fields may contain commas (`"681,610"`) — these are cleaned automatically.
-- `Test Drive` column in Enquiry.xlsx holds only `Y` / `N`; anything else is treated as `N`.
-- Enquiry ↔ Booking ↔ Sales rows are linked by `Customer ID` / `CustomerID` for the
-  test-drive-to-sale funnel.
-- "Lost" enquiries are rows whose `Enquiry Status` contains the word "Cancel".
+- **Overview** — KPIs (with vs-last-month deltas), Enquiry → Booking → Retail funnel,
+  test-drive gauge, top models, source mix, conversion tables.
+- **Enquiry** — status breakdown, **Appointed Enquiry** card, ageing, cities, lost reasons.
+- **Enquiry Follow-up** *(new)* — set the "Follow-up date (today)" (defaults to today):
+  - cards: **Due today**, **Previous days pending**, **Upcoming (7 days)**, **Open follow-ups**,
+    **Enquiry Follow up Cancel**, **Appointed Enquiry Cancel**
+  - **day-wise chart** (red = pending from previous days, amber = today, blue = upcoming;
+    click a bar to list that day) and **pending-by-age** chart
+  - **customer list** with tabs: Due today · Previous days pending (most overdue first) ·
+    Upcoming · All open · any single date you click
+  - **date-wise schedule** (every follow-up date, click to drill in) and **consultant-wise** table
+  - **cancelled enquiries** tabs for Follow up Cancel / Appointed Enquiry Cancel (with lost reason)
+- **Test Drive** — done (Y) vs not done (N), trend, by model / consultant / source, and how far
+  test-driven customers progressed to Booked / Retail.
+- **Booking** — Total bookings, **Booking Cancel** card, booking → retail, by source / model /
+  consultant, daily trend, booking-cancel reasons and cancels by model.
+- **Retails** — vehicles sold by model, consultant, source and daily trend.
+- **Enquiry Wise Stock** *(new)* — see below.
+- **Month Comparison** — every key metric, previous vs current month, filterable.
 
-If your exports use different column names, the loader functions in `data_processor.py`
-(`_load_enquiry`, `_load_booking`, `_load_sales`) are the only place you need to edit —
-everything downstream reads from the cleaned dataframes they produce.
+## 7a. Enquiry Wise Stock (Physical vs In Transit)
+
+Ported from the Mahindra *Enquiry_Wise_Stock* script. Every **live** enquiry (Enquiry Follow
+up, Appointed Enquiry, Lead, Booked — sold and cancelled are excluded; change
+`STOCK_MATCH_STATUSES` in `data_processor.py` to alter that) is matched to stock on
+**Model + Variant + Colour**:
+
+| Match status | Meaning |
+|---|---|
+| Exact Match - Physical | model + variant + colour free and physically in stock |
+| Exact Match - In Transit | exact unit only in transit |
+| Exact Match - Allocated Only | exact unit exists but is already allocated |
+| Variant Available - Other Color | same variant free, other colour |
+| Model Available - Other Variant | same model free, other variant |
+| No Stock Available | nothing free for the model — needs indent |
+| Variant Not Captured | enquiry has no variant, can't be matched |
+
+Enquiry and stock spell variants differently, so variants are compared on their **trim
+codes** (model name, emission norm and seat count are removed) and an enquiry variant matches
+a stock variant when its codes are a subset — the closest one is shown as *Resolved Stock
+Variant*. Availability is a **quantity**; nothing is reserved, so one car can serve several
+enquiries. If an enquiry has no colour, any colour of that variant is counted (noted in the row).
+
+The page shows KPI cards, clickable match-status chips, a status chart, demand-vs-stock by
+model, the enquiry-wise table (chassis numbers, location, oldest stock age), a **Demand vs
+Stock** table by Model/Variant/Colour (with "Short of physical stock", "Only in transit"…),
+and free stock oldest-first with how many enquiries each unit could serve.
+**Download Excel** exports the same result.
+
+**Stock:** it lives in the **same workbook as the Enquiry sheet**, on two sheets named
+**Physical Stock** and **In Transit** (see `Stock_Template.xlsx`). The **sheet name** decides
+Physical vs In Transit — the *In Out Status* column of the DMS export says "In Transit" on
+both sheets, so it is deliberately ignored. Columns are detected automatically
+(case-insensitive) and the page shows which column it read for each field: Model, Variant,
+**Exterior Color Name** (not *Color Type*), **Vin Number**, **Stock Age**, **Stock Location**.
+A unit counts as **Allocated** when *Blocked* = Y, *Stock Status* says allocated/booked, or
+*Bkng No* / *Cust Name* is filled (the factory *Order No* is not treated as allocation).
+A VIN on both sheets is counted once, as Physical. Uploading a new workbook replaces any
+older separate Stock.xlsx; a separate Stock.xlsx (single sheet with a Physical / In Transit
+column) is still accepted if you prefer. If a model is spelled differently in stock and
+enquiry and can't be reconciled automatically, add it to `MODEL_ALIASES` in `stock_engine.py`.
 
 ---
 
@@ -197,7 +217,7 @@ If you'd rather not use the Blueprint, create a **Web Service** manually and set
 - **Start command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
 
 **Load your real data onto the live site:** open the Render URL, click **Update monthly
-data** in the sidebar, and upload your three files there. They now live on Render's
+data** in the sidebar, and upload your Enquiry workbook (and Stock workbook) there. They now live on Render's
 server, not in your git repo.
 
 **Free-tier caveats worth knowing:**
