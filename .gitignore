@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --------------------------------------------------------------------------
+# Real dealership data. These workbooks contain real customer names, phone
+# numbers, addresses and PAN numbers — they should never end up in git
+# history, especially if this repository is (or might become) public.
+#
+# The dashboard works fine without them committed: keep them on your own
+# machine for local use, and for a deployed copy (Render, etc.) push new
+# months in through the app itself — sidebar -> "Update monthly data" —
+# rather than through git.
+# --------------------------------------------------------------------------
+data/*.xlsx
+data/*.xlsm
+!data/.gitkeep

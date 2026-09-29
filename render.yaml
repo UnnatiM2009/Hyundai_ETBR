@@ -1,0 +1,29 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One-click deploy: push this repo to GitHub, then on Render choose
+# "New +" -> "Blueprint" and point it at your repo. Render reads this
+# file and creates the web service automatically.
+#
+# If you'd rather set it up by hand instead of using a Blueprint, create a
+# "Web Service" manually with:
+#   Build command:  pip install -r requirements.txt
+#   Start command:  uvicorn main:app --host 0.0.0.0 --port $PORT
+
+services:
+  - type: web
+    name: unnati-hyundai-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # Protect the dashboard with a login once it's public. Set real values
+      # for these two in the Render dashboard (Environment tab) — do NOT
+      # commit real credentials into this file or into git.
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
