@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Unnati Unnati Hyundai ETBR Analysis</title>
+<title>Hyundai ETBR Analysis</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚗</text></svg>">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,7 +24,7 @@
     <div class="brand">
       <span class="brand-mark">H</span>
       <div class="brand-text">
-        <strong>Unnati Hyundai ETBR Analysis</strong>
+        <strong>Hyundai ETBR Analysis</strong>
         <span id="dealerCode">Unnati Hyundai</span>
       </div>
     </div>
@@ -32,9 +32,11 @@
     <nav class="nav">
       <button class="nav-link active" data-section="overview">Overview</button>
       <button class="nav-link" data-section="enquiry">Enquiry</button>
+      <button class="nav-link" data-section="followup">Enquiry Follow-up</button>
       <button class="nav-link" data-section="testdrive">Test Drive</button>
       <button class="nav-link" data-section="booking">Booking</button>
       <button class="nav-link" data-section="sales">Retails</button>
+      <button class="nav-link" data-section="stock">Enquiry Wise Stock</button>
       <button class="nav-link" data-section="comparison">Month Comparison</button>
     </nav>
 
@@ -55,7 +57,7 @@
     <header class="topbar">
       <button id="menuToggle" class="menu-toggle" aria-label="Toggle menu">☰</button>
       <div class="topbar-title">
-        <span class="dealer-tag">Unnati Hyundai ETBR Analysis</span>
+        <span class="dealer-tag">Hyundai ETBR Analysis</span>
         <h1 id="pageTitle">Overview</h1>
         <p id="pageSubtitle">Performance snapshot for the selected period</p>
       </div>
@@ -91,7 +93,7 @@
         <div class="panel">
           <div class="panel-head">
             <h3>Enquiry → Booking → Retail funnel</h3>
-            <p>Where this period's enquiries ended up</p>
+            <p>Where this period's enquiries ended up (Enquiry Status: Booked → Retail)</p>
           </div>
           <div id="overviewFunnel" class="funnel"></div>
         </div>
@@ -351,8 +353,8 @@
 
       <div class="panel-grid two-col">
         <div class="panel">
-          <div class="panel-head"><h3>Mode of purchase</h3></div>
-          <div class="chart-box"><canvas id="bookModeChart"></canvas></div>
+          <div class="panel-head"><h3>Bookings by source</h3></div>
+          <div class="chart-box"><canvas id="bookSourceChart"></canvas></div>
         </div>
         <div class="panel">
           <div class="panel-head"><h3>Bookings by model</h3></div>
@@ -367,6 +369,16 @@
         <div class="panel">
           <div class="panel-head"><h3>Daily booking trend</h3></div>
           <div class="chart-box"><canvas id="bookTrendChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Booking cancel reasons</h3><p>Enquiry Status = Booking Cancel</p></div>
+          <div class="chart-box"><canvas id="bookCancelReasonChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Booking cancels by model</h3></div>
+          <div class="chart-box"><canvas id="bookCancelModelChart"></canvas></div>
         </div>
       </div>
     
@@ -416,8 +428,8 @@
 
       <div class="panel-grid two-col">
         <div class="panel">
-          <div class="panel-head"><h3>Revenue by model</h3></div>
-          <div class="chart-box"><canvas id="salesRevenueChart"></canvas></div>
+          <div class="panel-head"><h3>Retails by consultant</h3></div>
+          <div class="chart-box"><canvas id="salesConsultantChart"></canvas></div>
         </div>
         <div class="panel">
           <div class="panel-head"><h3>Units retailed by model</h3></div>
@@ -426,7 +438,7 @@
       </div>
       <div class="panel-grid two-col">
         <div class="panel">
-          <div class="panel-head"><h3>Revenue trend</h3></div>
+          <div class="panel-head"><h3>Daily retail trend</h3></div>
           <div class="chart-box"><canvas id="salesTrendChart"></canvas></div>
         </div>
         <div class="panel">
@@ -453,6 +465,220 @@
         </div>
       </div>
 </section>
+
+    <!-- ---------- ENQUIRY FOLLOW-UP ---------- -->
+    <section class="view" id="view-followup">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="fuDate">Follow-up date (today)</label>
+            <input type="date" id="fuDate" class="filter-select">
+          </div>
+          <div class="filter-field">
+            <label for="fuMonth">Cancels in month</label>
+            <select id="fuMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="fuModel">Model</label>
+            <select id="fuModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="fuConsultant">Consultant</label>
+            <select id="fuConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="fuSource">Source</label>
+            <select id="fuSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="fuReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
+      <div class="kpi-grid" id="fuKpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Day-wise follow-ups</h3>
+            <p id="fuDayNote">Red = pending from previous days · Amber = due today · Blue = upcoming. Click a bar to list that day.</p>
+          </div>
+          <div class="chart-box"><canvas id="fuDayChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Pending follow-ups by age</h3>
+            <p>Previous days' follow-ups that are still open, by how overdue they are</p>
+          </div>
+          <div class="chart-box"><canvas id="fuAgeChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="fuListTitle">Follow-up list</h3>
+          <p id="fuListSub">Who to call — customers behind the numbers above</p>
+        </div>
+        <div class="tab-row" id="fuScopeTabs">
+          <button class="tab-btn active" data-scope="today">Due today</button>
+          <button class="tab-btn" data-scope="pending">Previous days pending</button>
+          <button class="tab-btn" data-scope="upcoming">Upcoming</button>
+          <button class="tab-btn" data-scope="all">All open</button>
+          <button class="tab-btn" data-scope="date" id="fuDateTab" style="display:none"></button>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table text-table" id="fuListTable">
+            <thead id="fuListHead"></thead>
+            <tbody id="fuListBody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="fuListHint"></p>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Date-wise follow-up schedule</h3>
+            <p>Every follow-up date — click a row to see those customers</p>
+          </div>
+          <div class="table-wrap tall">
+            <table class="comparison-table text-table" id="fuDateTable">
+              <thead><tr><th>Date</th><th>Day</th><th>Follow-ups</th><th>Position</th></tr></thead>
+              <tbody id="fuDateBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Consultant-wise follow-ups</h3>
+            <p>Pending backlog, due today and upcoming, per consultant</p>
+          </div>
+          <div class="table-wrap tall">
+            <table class="comparison-table" id="fuConsultantTable">
+              <thead><tr><th>Consultant</th><th>Pending</th><th>Due today</th><th>Upcoming</th><th>Total</th></tr></thead>
+              <tbody id="fuConsultantBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Cancelled enquiries</h3>
+          <p id="fuCancelSub">Enquiry Follow up Cancel and Appointed Enquiry Cancel for the selected month</p>
+        </div>
+        <div class="tab-row" id="fuCancelTabs">
+          <button class="tab-btn active" data-scope="followup_cancel">Enquiry Follow up Cancel</button>
+          <button class="tab-btn" data-scope="appointed_cancel">Appointed Enquiry Cancel</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table text-table" id="fuCancelTable">
+            <thead id="fuCancelHead"></thead>
+            <tbody id="fuCancelBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- ENQUIRY WISE STOCK ---------- -->
+    <section class="view" id="view-stock">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="stStatus">Enquiry status</label>
+            <select id="stStatus" class="filter-select"><option value="all">All live enquiries</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="stModel">Model</label>
+            <select id="stModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="stConsultant">Consultant</label>
+            <select id="stConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="stSource">Source</label>
+            <select id="stSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="stReset" class="ghost-btn light-ghost">Reset filters</button>
+          <button id="stExport" class="ghost-btn light-ghost">Download Excel</button>
+        </div>
+      </div>
+
+      <div class="notice" id="stNotice" style="display:none"></div>
+      <div class="kpi-grid" id="stKpiGrid"></div>
+
+      <div id="stBody">
+      <div class="panel" id="stMatchPanel">
+        <div class="panel-head">
+          <h3>Enquiry vs stock — match result</h3>
+          <p>Matched on Model + Variant + Colour. Click a status to list those enquiries. Availability is a quantity — nothing is reserved.</p>
+        </div>
+        <div class="chip-row" id="stChips"></div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Match status split</h3></div>
+          <div class="chart-box" style="height:380px"><canvas id="stStatusChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Demand vs free stock by model</h3>
+            <p>Enquiries against physical and in-transit units</p>
+          </div>
+          <div class="chart-box" style="height:380px"><canvas id="stModelChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="stListTitle">Enquiry-wise stock</h3>
+          <p>One row per enquiry — what is free for it, physically here or still in transit</p>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table text-table" id="stListTable">
+            <thead id="stListHead"></thead>
+            <tbody id="stListBody"></tbody>
+          </table>
+        </div>
+        <div class="list-foot">
+          <p class="hint" id="stListHint"></p>
+          <button id="stMore" class="ghost-btn light-ghost" style="display:none">Show 100 more</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Demand vs stock — Model / Variant / Colour</h3>
+          <p>Enquiries against free stock. Negative gap = enquiries that cannot be served from physical stock today.</p>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table text-table" id="stDemandTable">
+            <thead id="stDemandHead"></thead>
+            <tbody id="stDemandBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Free stock — enquiry coverage (oldest first)</h3>
+          <p>Filter "Enquiries" = 0 mentally: those units have no matching enquiry on Model + Variant + Colour</p>
+        </div>
+        <div class="tab-row" id="stCoverTabs">
+          <button class="tab-btn active" data-type="all">All free</button>
+          <button class="tab-btn" data-type="Physical">Physical</button>
+          <button class="tab-btn" data-type="In Transit">In Transit</button>
+          <button class="tab-btn" data-type="noenq">No enquiry</button>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table text-table" id="stCoverTable">
+            <thead id="stCoverHead"></thead>
+            <tbody id="stCoverBody"></tbody>
+          </table>
+        </div>
+      </div>
+      </div><!-- /stBody -->
+    </section>
 
     <!-- ---------- COMPARISON ---------- -->
     <section class="view" id="view-comparison">
@@ -506,19 +732,15 @@
 <div class="modal-backdrop" id="uploadModal">
   <div class="modal">
     <h3>Update monthly data</h3>
-    <p>Replace one or more workbooks with a fresh export. Everything recalculates immediately, and the current vs. previous month comparison updates automatically.</p>
+    <p>Upload the workbook with the Enquiry, Physical Stock and In Transit sheets. Booking and Retail are read from the Enquiry Status column; stock is read from the two stock sheets. Everything recalculates immediately, and the current vs. previous month comparison updates automatically.</p>
     <form id="uploadForm">
       <label class="upload-row">
-        <span>Enquiry.xlsx</span>
+        <span>Workbook: Enquiry + Physical Stock + In Transit sheets</span>
         <input type="file" name="enquiry" accept=".xlsx,.xlsm">
       </label>
       <label class="upload-row">
-        <span>Booking.xlsx</span>
-        <input type="file" name="booking" accept=".xlsx,.xlsm">
-      </label>
-      <label class="upload-row">
-        <span>SalesReport.xlsx</span>
-        <input type="file" name="sales" accept=".xlsx,.xlsm">
+        <span>Stock.xlsx (only if stock is a separate file)</span>
+        <input type="file" name="stock" accept=".xlsx,.xlsm">
       </label>
       <div class="modal-actions">
         <button type="button" class="ghost-btn" id="cancelUpload">Cancel</button>

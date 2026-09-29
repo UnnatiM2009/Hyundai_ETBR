@@ -387,6 +387,54 @@ canvas { max-width: 100%; }
 .light-ghost:hover { background: var(--border); color: var(--ink); }
 
 /* ==========================================================================
+   Follow-up + Enquiry-wise-stock pages (added) - text tables, badges, chips
+   ========================================================================== */
+.text-table th, .text-table td { text-align: left !important; white-space: nowrap; }
+.text-table td { padding: 10px 14px; font-size: 0.86rem; }
+.text-table td.wrap { white-space: normal; min-width: 200px; max-width: 320px; }
+.text-table td.num, .text-table th.num { text-align: center !important; }
+.text-table tr.clickable { cursor: pointer; }
+.text-table tr.clickable:hover td { background: var(--surface-2); }
+.text-table tr.selected td { background: var(--blue-soft); }
+.table-wrap.tall { max-height: 460px; overflow: auto; }
+.table-wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+input[type="date"].filter-select { min-height: 38px; }
+
+.badge {
+  display: inline-block; padding: 3px 9px; border-radius: 999px;
+  font-size: 0.74rem; font-weight: 600; line-height: 1.4;
+}
+.badge.green  { background: var(--green-soft);  color: var(--green); }
+.badge.amber  { background: var(--amber-soft);  color: var(--amber); }
+.badge.blue   { background: var(--blue-soft);   color: var(--blue); }
+.badge.red    { background: var(--red-soft);    color: var(--red); }
+.badge.purple { background: var(--purple-soft); color: var(--purple); }
+.badge.grey   { background: var(--surface-2);   color: var(--ink-muted); border: 1px solid var(--border); }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip {
+  display: flex; flex-direction: column; gap: 2px; min-width: 150px; flex: 1 1 150px;
+  padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2);
+  border: 1px solid var(--border); border-left: 4px solid var(--chip-color, var(--blue));
+  cursor: pointer; text-align: left; font-family: var(--font-body); color: var(--ink);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.chip:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.chip.active { background: var(--blue-soft); border-color: var(--chip-color, var(--blue)); }
+.chip-count { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; }
+.chip-label { font-size: 0.78rem; color: var(--ink-muted); font-weight: 600; }
+
+.notice {
+  padding: 12px 16px; margin-bottom: 20px; border-radius: var(--radius);
+  background: var(--amber-soft); color: var(--ink); border: 1px solid var(--amber);
+  font-size: 0.86rem; line-height: 1.5;
+}
+.notice.info { background: var(--blue-soft); border-color: var(--blue); }
+.notice strong { font-weight: 700; }
+.list-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.list-foot .hint { margin-top: 0; }
+
+/* ==========================================================================
    Breakdown table tabs (Model / Consultant / Source)
    ========================================================================== */
 .tab-row {
