@@ -1228,6 +1228,8 @@ def compute_vehicle_stock_kpis(model: Optional[str] = None, stage: Optional[str]
             "free_count": 0, "allocated_count": 0,
             "physical_value": 0.0, "transit_value": 0.0,
             "avg_stock_age_days": 0.0, "aged_60_plus": 0, "aged_90_plus": 0, "aged_60_plus_rate": 0.0,
+            "physical_basic_price": 0.0, "transit_basic_price": 0.0, "total_basic_price": 0.0,
+            "physical_basic_count": 0, "transit_basic_count": 0, "total_basic_count": 0,
         }
 
     physical = df[df["Stock Type"] == se.PHYSICAL]
@@ -1250,6 +1252,14 @@ def compute_vehicle_stock_kpis(model: Optional[str] = None, stage: Optional[str]
         "aged_60_plus": aged_60,
         "aged_90_plus": aged_90,
         "aged_60_plus_rate": _safe_div(aged_60, physical_count),
+        # Basic Price (from the 'Basic Price' column of Physical Stock / In Transit sheets)
+        # and the number of units that carry a Basic Price.
+        "physical_basic_price": round(float(physical["Basic Price"].sum()), 2),
+        "transit_basic_price": round(float(transit["Basic Price"].sum()), 2),
+        "total_basic_price": round(float(df["Basic Price"].sum()), 2),
+        "physical_basic_count": int((physical["Basic Price"] > 0).sum()),
+        "transit_basic_count": int((transit["Basic Price"] > 0).sum()),
+        "total_basic_count": int((df["Basic Price"] > 0).sum()),
     }
 
 
@@ -1304,6 +1314,10 @@ def _vehicle_stock_group_row(label: str, sub: pd.DataFrame) -> dict:
         "total": int(len(sub)),
         "avg_age_days": round(avg_age, 1),
         "stock_value": round(value, 2),
+        "physical_basic_price": round(float(physical["Basic Price"].sum()), 2),
+        "transit_basic_price": round(float(transit["Basic Price"].sum()), 2),
+        "basic_price_total": round(float(sub["Basic Price"].sum()), 2),
+        "basic_price_count": int((sub["Basic Price"] > 0).sum()),
     }
 
 
