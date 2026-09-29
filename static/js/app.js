@@ -11,6 +11,8 @@ const state = {
   charts: {},           // chart.js instances keyed by canvas id
   loadedSections: new Set(),
   gaugeLength: null,
+  inventoryFilterOptions: null,
+  inventoryBreakdownCache: null,
 };
 
 /* Every section that has its own Month / Model / Consultant / Source filter
@@ -1084,6 +1086,141 @@ function renderStockCoverage() {
     : `<tr><td colspan="8" class="empty-cell">No units for this selection.</td></tr>`;
 }
 
+/* ---------------------------------------------------------------------- */
+/* Vehicle Stock — plain inventory overview (Physical vs In Transit).      */
+/* Distinct from Enquiry Wise Stock above: this is "what does our          */
+/* inventory look like" (aging, value, model/fuel/color/financier mix)     */
+/* rather than "which enquiry can this unit fulfil". Its filter bar is     */
+/* Stage / Model / Fuel Type / Financier — not Month/Consultant/Source —   */
+/* so it gets its own small set of bespoke functions rather than reusing   */
+/* the generic filter-bar helpers above.                                   */
+/* ---------------------------------------------------------------------- */
+
+const INV_DIM_LABELS = { model: "Model", variant: "Variant", color: "Color" };
+const INV_BREAKDOWN_COLUMNS = [
+  { key: "physical", label: "Physical", fmt: (v) => fmtInt(v) },
+  { key: "transit", label: "Transit", fmt: (v) => fmtInt(v) },
+  { key: "total", label: "Total", fmt: (v) => fmtInt(v) },
+  { key: "avg_age_days", label: "Avg. Age", fmt: (v) => `${v} days` },
+  { key: "stock_value", label: "Stock Value", fmt: (v) => fmtMoney(v) },
+];
+
+async function populateInventoryFilters() {
+  if (!state.inventoryFilterOptions) {
+    state.inventoryFilterOptions = await getJSON("/api/vehicle-stock/filters");
+  }
+  const fillSelect = (sel, values, allLabel) => {
+    if (!sel) return;
+    const previous = sel.value;
+    sel.innerHTML = "";
+    if (allLabel) sel.appendChild(new Option(allLabel, "all"));
+    values.forEach(v => sel.appendChild(new Option(v, v)));
+    const stillValid = Array.from(sel.options).some(o => o.value === previous);
+    sel.value = stillValid ? previous : (sel.options[0]?.value ?? "all");
+  };
+  fillSelect(document.getElementById("invModel"), state.inventoryFilterOptions.models, "All models");
+  fillSelect(document.getElementById("invFuel"), state.inventoryFilterOptions.fuel_types, "All fuel types");
+  fillSelect(document.getElementById("invFinancier"), state.inventoryFilterOptions.financiers, "All financiers");
+  // invStage keeps its three hardcoded options (all/Physical/In Transit).
+}
+
+function readInventoryFilters() {
+  return {
+    stage: document.getElementById("invStage")?.value || "all",
+    model: document.getElementById("invModel")?.value || "all",
+    fuel_type: document.getElementById("invFuel")?.value || "all",
+    financier: document.getElementById("invFinancier")?.value || "all",
+  };
+}
+
+function attachInventoryFilters(onChange) {
+  if (!document.getElementById("invStage")) return;
+  ["invStage", "invModel", "invFuel", "invFinancier"].forEach(id => {
+    document.getElementById(id).addEventListener("change", onChange);
+  });
+  document.getElementById("invReset").addEventListener("click", async () => {
+    document.getElementById("invStage").value = "all";
+    document.getElementById("invModel").value = "all";
+    document.getElementById("invFuel").value = "all";
+    document.getElementById("invFinancier").value = "all";
+    await onChange();
+  });
+}
+
+function inventoryApiParams(f) {
+  return new URLSearchParams({ stage: f.stage, model: f.model, fuel_type: f.fuel_type, financier: f.financier }).toString();
+}
+
+function renderInventoryBreakdownTable(data, activeDim) {
+  const head = document.getElementById("invBreakdownHead");
+  const body = document.getElementById("invBreakdownBody");
+  const rows = (data && data[`by_${activeDim}`]) || [];
+
+  head.innerHTML = `<tr><th>${INV_DIM_LABELS[activeDim]}</th>${INV_BREAKDOWN_COLUMNS.map(c => `<th>${c.label}</th>`).join("")}</tr>`;
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${INV_BREAKDOWN_COLUMNS.length + 1}" class="empty-cell">No stock matches this selection.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.label)}</td>
+      ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
+    </tr>
+  `).join("");
+}
+
+async function loadVehicleStock() {
+  await populateInventoryFilters();
+  const f = readInventoryFilters();
+  const qs = inventoryApiParams(f);
+
+  const [kpis, analytics, breakdown] = await Promise.all([
+    getJSON(`/api/vehicle-stock/kpis?${qs}`),
+    getJSON(`/api/vehicle-stock/analytics?${qs}`),
+    getJSON(`/api/vehicle-stock/breakdown?${qs}`),
+  ]);
+  state.inventoryBreakdownCache = breakdown;
+
+  const hasAnyStock = state.meta && state.meta.row_counts && state.meta.row_counts.stock > 0;
+  document.getElementById("invEmptyHint").textContent = hasAnyStock ? "" :
+    "No stock data found. Add 'Physical Stock' and 'In Transit' sheets to your Enquiry workbook " +
+    "(or upload a separate Stock workbook) via \"Update monthly data\" to populate this page.";
+
+  renderKpiGrid("invKpiGrid", [
+    { label: "Total stock", value: fmtInt(kpis.total_stock), color: "var(--blue)", sub: "physical + in transit" },
+    { label: "Physical stock", value: fmtInt(kpis.physical_count), color: "var(--amber)", sub: "on the ground now" },
+    { label: "In transit", value: fmtInt(kpis.transit_count), color: "var(--purple)", sub: "despatched, not yet arrived" },
+    { label: "Physical stock value", value: fmtMoney(kpis.physical_value), color: "var(--green)", sub: "HMIL invoice value" },
+    { label: "Avg. stock age", value: `${kpis.avg_stock_age_days} days`, color: "var(--blue)", sub: "physical stock only" },
+    { label: "Aged 60+ days", value: fmtInt(kpis.aged_60_plus), color: "var(--red)",
+      sub: `${fmtPct(kpis.aged_60_plus_rate)} of physical stock` },
+  ]);
+
+  const stage = analytics.stage_split || { Physical: 0, Transit: 0 };
+  doughnutChart("invStageChart", ["Physical", "Transit"], [stage.Physical, stage.Transit],
+    [cssVar("--amber"), cssVar("--purple")]);
+
+  const aging = analytics.aging_buckets || [];
+  barChart("invAgingChart", aging.map(a => a.label), aging.map(a => a.value), cssVar("--red"), false);
+
+  const byModel = analytics.by_model || [];
+  barChart("invModelChart", byModel.map(m => m.label), byModel.map(m => m.value), cssVar("--blue"));
+
+  const fuel = analytics.fuel_breakdown || [];
+  doughnutChart("invFuelChart", fuel.map(x => x.label), fuel.map(x => x.value),
+    [cssVar("--blue"), cssVar("--amber"), cssVar("--green")]);
+
+  const colors = analytics.color_breakdown || [];
+  barChart("invColorChart", colors.map(c => c.label), colors.map(c => c.value), cssVar("--purple"));
+
+  const financiers = analytics.financier_breakdown || [];
+  barChart("invFinancierChart", financiers.map(x => x.label), financiers.map(x => x.value), cssVar("--green"), false);
+
+  const activeBtn = document.querySelector("#invBreakdownTabs .tab-btn.active");
+  renderInventoryBreakdownTable(breakdown, activeBtn ? activeBtn.dataset.dim : "model");
+}
+
 const SECTION_LOADERS = {
   overview: loadOverview,
   testdrive: loadTestDrive,
@@ -1092,6 +1229,7 @@ const SECTION_LOADERS = {
   followup: loadFollowup,
   booking: loadBooking,
   sales: loadSales,
+  inventory: loadVehicleStock,
   stock: loadStock,
   comparison: loadComparison,
 };
@@ -1104,6 +1242,7 @@ const SECTION_TITLES = {
   followup: ["Enquiry follow-up", "Day-wise and previous-days pending follow-ups, date-wise schedule, follow-up and appointed cancels"],
   booking: ["Booking analytics", "Enquiry Status = Booked — sources, consultants, trend and booking cancels"],
   sales: ["Retail analytics", "Enquiry Status = Retail — vehicles sold, by model, consultant and source"],
+  inventory: ["Vehicle stock", "Physical stock and in-transit vehicles — inventory overview (aging, value, mix)"],
   stock: ["Enquiry wise stock", "Every live enquiry matched to Physical and In-Transit stock (Model + Variant + Colour)"],
   comparison: ["Month comparison", "Current month vs the previous month, metric by metric"],
 };
@@ -1312,6 +1451,16 @@ async function boot() {
     stState.cover = btn.dataset.type;
     document.querySelectorAll("#stCoverTabs .tab-btn").forEach(b => b.classList.toggle("active", b === btn));
     renderStockCoverage();
+  });
+
+  // Vehicle Stock page (own filter set: Stage/Model/Fuel Type/Financier)
+  attachInventoryFilters(loadVehicleStock);
+  document.getElementById("invBreakdownTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (!btn) return;
+    document.querySelectorAll("#invBreakdownTabs .tab-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    if (state.inventoryBreakdownCache) renderInventoryBreakdownTable(state.inventoryBreakdownCache, btn.dataset.dim);
   });
 
   // Model / Consultant / Source tabs under each page's breakdown table

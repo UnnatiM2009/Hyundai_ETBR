@@ -37,6 +37,7 @@
       <button class="nav-link" data-section="booking">Booking</button>
       <button class="nav-link" data-section="sales">Retails</button>
       <button class="nav-link" data-section="exchange">Exchange</button>
+      <button class="nav-link" data-section="inventory">Vehicle Stock</button>
       <button class="nav-link" data-section="stock">Enquiry Wise Stock</button>
       <button class="nav-link" data-section="comparison">Month Comparison</button>
     </nav>
@@ -691,6 +692,95 @@
             <tbody id="exBreakdownBody"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- ---------- VEHICLE STOCK (inventory overview) ---------- -->
+    <section class="view" id="view-inventory">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="invStage">Stage</label>
+            <select id="invStage" class="filter-select">
+              <option value="all">Physical + Transit</option>
+              <option value="Physical">Physical only</option>
+              <option value="In Transit">Transit only</option>
+            </select>
+          </div>
+          <div class="filter-field">
+            <label for="invModel">Model</label>
+            <select id="invModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="invFuel">Fuel Type</label>
+            <select id="invFuel" class="filter-select"><option value="all">All fuel types</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="invFinancier">Financier</label>
+            <select id="invFinancier" class="filter-select"><option value="all">All financiers</option></select>
+          </div>
+          <button id="invReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" id="invKpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel accent-amber">
+          <div class="panel-head">
+            <h3>Physical vs Transit</h3>
+            <p>What's on the ground right now vs what's still on the way</p>
+          </div>
+          <div class="chart-box"><canvas id="invStageChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Stock ageing (Physical)</h3>
+            <p>Days since HMI invoice — older buckets tie up working capital</p>
+          </div>
+          <div class="chart-box"><canvas id="invAgingChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Stock by model</h3></div>
+          <div class="chart-box"><canvas id="invModelChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Fuel type mix</h3></div>
+          <div class="chart-box"><canvas id="invFuelChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Top colors</h3></div>
+          <div class="chart-box"><canvas id="invColorChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Financier mix</h3><p>Floor-plan financing behind each unit</p></div>
+          <div class="chart-box"><canvas id="invFinancierChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, variant and color detail — Physical vs Transit counts, average age and stock value</p>
+        </div>
+        <div class="tab-row" id="invBreakdownTabs">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="variant">By Variant</button>
+          <button class="tab-btn" data-dim="color">By Color</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="invBreakdownTable">
+            <thead id="invBreakdownHead"></thead>
+            <tbody id="invBreakdownBody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="invEmptyHint"></p>
       </div>
     </section>
 
