@@ -1103,6 +1103,10 @@ const INV_BREAKDOWN_COLUMNS = [
   { key: "total", label: "Total", fmt: (v) => fmtInt(v) },
   { key: "avg_age_days", label: "Avg. Age", fmt: (v) => `${v} days` },
   { key: "stock_value", label: "Stock Value", fmt: (v) => fmtMoney(v) },
+  { key: "physical_basic_price", label: "Physical Basic Price", fmt: (v) => fmtMoney(v) },
+  { key: "transit_basic_price", label: "Transit Basic Price", fmt: (v) => fmtMoney(v) },
+  { key: "basic_price_total", label: "Total Basic Price", fmt: (v) => fmtMoney(v) },
+  { key: "basic_price_count", label: "Basic Price Count", fmt: (v) => fmtInt(v) },
 ];
 
 async function populateInventoryFilters() {
@@ -1195,6 +1199,12 @@ async function loadVehicleStock() {
     { label: "Avg. stock age", value: `${kpis.avg_stock_age_days} days`, color: "var(--blue)", sub: "physical stock only" },
     { label: "Aged 60+ days", value: fmtInt(kpis.aged_60_plus), color: "var(--red)",
       sub: `${fmtPct(kpis.aged_60_plus_rate)} of physical stock` },
+    { label: "Physical basic price", value: fmtMoney(kpis.physical_basic_price), color: "var(--green)",
+      sub: `${fmtInt(kpis.physical_basic_count)} units with basic price` },
+    { label: "In transit basic price", value: fmtMoney(kpis.transit_basic_price), color: "var(--purple)",
+      sub: `${fmtInt(kpis.transit_basic_count)} units with basic price` },
+    { label: "Total basic price", value: fmtMoney(kpis.total_basic_price), color: "var(--blue)",
+      sub: `${fmtInt(kpis.total_basic_count)} units · physical + in transit` },
   ]);
 
   const stage = analytics.stage_split || { Physical: 0, Transit: 0 };
