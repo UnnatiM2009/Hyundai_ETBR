@@ -18,7 +18,7 @@ const state = {
    section key used elsewhere (SECTION_LOADERS, /api/breakdown?section=...). */
 const PREFIX_TO_SECTION = {
   ov: "overview", enq: "enquiry", td: "testdrive", book: "booking", sales: "sales",
-  conv: "conversion",
+  conv: "conversion", ex: "exchange",
 };
 
 /* Column layout for the Model/Consultant/Source breakdown table on each page —
@@ -50,6 +50,13 @@ const BREAKDOWN_COLUMNS = {
   sales: [
     { key: "units", label: "Units", fmt: (v) => fmtInt(v) },
     { key: "avg_booking_to_retail_days", label: "Avg. Booking → Retail", fmt: (v) => `${v} days` },
+  ],
+  exchange: [
+    { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "exchange", label: "Exchange Opted", fmt: (v) => fmtInt(v) },
+    { key: "exchange_rate", label: "Exchange %", fmt: (v) => fmtPct(v) },
+    { key: "scrap", label: "Scrap (Y)", fmt: (v) => fmtInt(v) },
+    { key: "present_car", label: "Present Car (Y)", fmt: (v) => fmtInt(v) },
   ],
   conversion: [
     { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
@@ -295,7 +302,26 @@ function renderGauge(pct, done, total) {
 /* Section loaders                                                         */
 /* ---------------------------------------------------------------------- */
 function apiParams(f) {
-  return new URLSearchParams({ period: f.month, model: f.model, consultant: f.consultant, source: f.source }).toString();
+  const p = { period: f.month, model: f.model, consultant: f.consultant, source: f.source };
+  if (f.age && f.age !== "all") p.age = f.age;      // Enquiry page only
+  return new URLSearchParams(p).toString();
+}
+
+/* "Enquiry aging days" dropdown on the Enquiry page: buckets first, then each exact age in days. */
+function populateAgeSelect() {
+  const sel = document.getElementById("enqAge");
+  if (!sel || !state.filterOptions?.ages) return;
+  const previous = sel.value;
+  const ages = state.filterOptions.ages;
+  sel.innerHTML = "";
+  sel.appendChild(new Option("All enquiry ages", "all"));
+  const g1 = document.createElement("optgroup"); g1.label = "Age range";
+  ages.buckets.forEach(b => g1.appendChild(new Option(b.label, b.value)));
+  sel.appendChild(g1);
+  const g2 = document.createElement("optgroup"); g2.label = "Exact age";
+  ages.days.forEach(d => g2.appendChild(new Option(d === 1 ? "1 day" : `${d} days`, `d:${d}`)));
+  sel.appendChild(g2);
+  sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
 }
 
 async function loadOverview() {
@@ -389,8 +415,12 @@ async function loadTestDrive() {
 
 async function loadEnquiry() {
   await populateFilterBar("enq");
+  populateAgeSelect();
   const f = readFilterBar("enq");
+  f.age = document.getElementById("enqAge")?.value || "all";
   const qs = apiParams(f);
+  const ageOn = f.age !== "all";
+  const ageText = ageOn ? document.getElementById("enqAge").selectedOptions[0].textContent : "";
 
   const [kpis, enquiry, comparison] = await Promise.all([
     getJSON(`/api/kpis?${qs}`),
@@ -401,13 +431,13 @@ async function loadEnquiry() {
 
   renderKpiGrid("enqKpiGrid", [
     { label: "Total enquiries", value: fmtInt(kpis.total_enquiries), color: "var(--blue)",
-      sub: deltaHtml(cmp["Total Enquiries"]?.change_pct, cmp["Total Enquiries"]?.direction) },
+      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Total Enquiries"]?.change_pct, cmp["Total Enquiries"]?.direction) },
     { label: "Enquiry → booking", value: fmtPct(kpis.enquiry_to_booking_rate), color: "var(--green)",
-      sub: deltaHtml(cmp["Enquiry to Booking Conv. (%)"]?.change_pct, cmp["Enquiry to Booking Conv. (%)"]?.direction) },
+      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Enquiry to Booking Conv. (%)"]?.change_pct, cmp["Enquiry to Booking Conv. (%)"]?.direction) },
     { label: "Appointed enquiry", value: fmtInt(kpis.appointed_enquiries), color: "var(--purple)",
-      sub: "status = Appointed Enquiry, this selection" },
+      sub: ageOn ? `enquiry age: ${ageText}` : "status = Appointed Enquiry, this selection" },
     { label: "Lost enquiries", value: fmtInt(kpis.lost_enquiries), color: "var(--red)",
-      sub: deltaHtml(cmp["Lost Enquiries"]?.change_pct, cmp["Lost Enquiries"]?.direction) },
+      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Lost Enquiries"]?.change_pct, cmp["Lost Enquiries"]?.direction) },
   ]);
 
   const status = enquiry.status_breakdown || [];
@@ -424,6 +454,75 @@ async function loadEnquiry() {
   barChart("enqLostChart", lost.map(l => l.label), lost.map(l => l.value), cssVar("--red"));
 
   await loadBreakdownFor("enq", "enquiry", f);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Exchange page                                                            */
+/* ---------------------------------------------------------------------- */
+const exState = { scope: "exchange" };
+
+async function loadExchange() {
+  await populateFilterBar("ex");
+  const f = readFilterBar("ex");
+  const qs = apiParams(f);
+  const data = await getJSON(`/api/exchange?${qs}&scope=${exState.scope}`);
+  const k = data.kpis;
+  const palette = [cssVar("--blue"), cssVar("--amber"), cssVar("--green"), cssVar("--purple"), cssVar("--red"), "#999"];
+
+  renderKpiGrid("exKpiGrid", [
+    { label: "Exchange opted (Y)", value: fmtInt(k.exchange_opted), color: "var(--blue)",
+      sub: `${fmtPct(k.exchange_rate)} of ${fmtInt(k.total_enquiries)} enquiries` },
+    { label: "Present car owners", value: fmtInt(k.present_car), color: "var(--amber)",
+      sub: "Present Car = Y" },
+    { label: "Scrap (Y)", value: fmtInt(k.scrap_yes), color: "var(--red)",
+      sub: `${fmtInt(k.scrap_no)} said No · among exchange customers` },
+    { label: "Scrap through Hyundai (Y)", value: fmtInt(k.scrap_hyundai_yes), color: "var(--purple)",
+      sub: "Scrap Through Hyundai Y/N = Y" },
+    { label: "Exchange → booked / retail", value: fmtInt(k.exchange_converted), color: "var(--green)",
+      sub: "exchange customers now Booked or Retail" },
+    { label: "Avg. present car age", value: `${k.avg_car_age} yrs`, color: "var(--blue)",
+      sub: "from Model Year, present car owners" },
+  ]);
+
+  doughnutChart("exSplitChart", ["Exchange opted (Y)", "Not opted (N)"],
+    [data.exchange_split.Y, data.exchange_split.N], [cssVar("--blue"), cssVar("--border")]);
+  doughnutChart("exPresentChart", ["Has present car (Y)", "No present car (N)"],
+    [data.present_split.Y, data.present_split.N], [cssVar("--amber"), cssVar("--border")]);
+
+  const sc = data.scrap_split || [];
+  doughnutChart("exScrapChart", sc.map(x => x.label), sc.map(x => x.value),
+    [cssVar("--red"), cssVar("--green"), cssVar("--border")]);
+  const sh = data.scrap_hyundai_split || [];
+  doughnutChart("exScrapHyundaiChart", sh.map(x => x.label), sh.map(x => x.value),
+    [cssVar("--purple"), cssVar("--amber"), cssVar("--border")]);
+
+  const mk = data.by_maker || [];
+  barChart("exMakerChart", mk.map(x => x.label), mk.map(x => x.value), cssVar("--blue"));
+  const mm = data.by_maker_model || [];
+  barChart("exMakerModelChart", mm.map(x => x.label), mm.map(x => x.value), cssVar("--purple"));
+  const yr = data.by_year || [];
+  barChart("exYearChart", yr.map(x => x.label), yr.map(x => x.value), cssVar("--amber"), false);
+  const bm = data.by_model || [];
+  barChart("exModelChart", bm.map(x => x.label), bm.map(x => x.value), cssVar("--green"));
+
+  renderExchangeList(data);
+  await loadBreakdownFor("ex", "exchange", f);
+}
+
+function renderExchangeList(data) {
+  const yn = (v) => v === "Y" ? badge("Yes", "green") : v === "N" ? badge("No", "grey") : "—";
+  const body = document.getElementById("exListBody");
+  const rows = data.rows || [];
+  body.innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${dash(r.date)}</td><td>${dash(r.name)}<br><span class="muted-sm">${dash(r.customer_id)}</span></td>
+    <td>${dash(r.phone)}</td><td>${dash(r.consultant)}</td><td>${dash(r.status)}</td>
+    <td>${dash(r.model)}</td><td>${yn(r.exchange)}</td><td>${yn(r.scrap)}</td><td>${yn(r.scrap_hyundai)}</td>
+    <td>${yn(r.present_car)}</td><td>${dash(r.maker)}</td><td>${dash(r.maker_model)}</td>
+    <td>${dash(r.model_year)}</td><td>${dash(r.car_age)}</td></tr>`).join("")
+    : `<tr><td colspan="14" class="empty-cell">No customers for this selection.</td></tr>`;
+  const label = { exchange: "exchange-opted customers", present: "present car owners", all: "enquiries" }[data.scope];
+  document.getElementById("exListHint").textContent =
+    `Showing ${fmtInt(rows.length)} of ${fmtInt(data.row_total)} ${label}, newest enquiry first.`;
 }
 
 async function loadBooking() {
@@ -661,6 +760,7 @@ async function loadBreakdownFor(prefix, section, filters) {
     section, period: filters.month, model: filters.model,
     consultant: filters.consultant, source: filters.source,
   });
+  if (filters.age && filters.age !== "all") params.set("age", filters.age);
   const data = await getJSON(`/api/breakdown?${params.toString()}`);
   state.breakdownCache[prefix] = data;
   const activeBtn = document.querySelector(`[data-tabgroup="${prefix}"] .tab-btn.active`);
@@ -988,6 +1088,7 @@ const SECTION_LOADERS = {
   overview: loadOverview,
   testdrive: loadTestDrive,
   enquiry: loadEnquiry,
+  exchange: loadExchange,
   followup: loadFollowup,
   booking: loadBooking,
   sales: loadSales,
@@ -999,6 +1100,7 @@ const SECTION_TITLES = {
   overview: ["Overview", "Performance snapshot for the selected period"],
   testdrive: ["Test drive analytics", "Enquiry sheet column O — Y (done) vs N (not done)"],
   enquiry: ["Enquiry analytics", "Status, appointed enquiries, sources, ageing and lost reasons"],
+  exchange: ["Exchange analytics", "Exchange opted, scrap, present car, maker, model and model year from the Enquiry sheet"],
   followup: ["Enquiry follow-up", "Day-wise and previous-days pending follow-ups, date-wise schedule, follow-up and appointed cancels"],
   booking: ["Booking analytics", "Enquiry Status = Booked — sources, consultants, trend and booking cancels"],
   sales: ["Retail analytics", "Enquiry Status = Retail — vehicles sold, by model, consultant and source"],
@@ -1150,7 +1252,18 @@ async function boot() {
 
   // Every page's own Month / Model / Consultant / Source filter bar
   attachFilterBar("ov", loadOverview);
-  attachFilterBar("enq", loadEnquiry);
+  attachFilterBar("enq", loadEnquiry, {
+    extraFields: ["Age"],
+    onReset: () => { const a = document.getElementById("enqAge"); if (a) a.value = "all"; },
+  });
+  attachFilterBar("ex", loadExchange);
+  document.getElementById("exScopeTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (!btn) return;
+    exState.scope = btn.dataset.scope;
+    document.querySelectorAll("#exScopeTabs .tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    loadExchange();
+  });
   attachFilterBar("td", loadTestDrive);
   attachFilterBar("book", loadBooking);
   attachFilterBar("sales", loadSales);

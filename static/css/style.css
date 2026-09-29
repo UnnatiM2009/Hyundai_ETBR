@@ -585,3 +585,5 @@ input[type="date"].filter-select { min-height: 38px; }
   .kpi-grid { grid-template-columns: 1fr; }
   .filter-field { flex: 1 1 100%; }
 }
+
+.muted-sm { font-size: 0.74rem; color: var(--ink-faint); }

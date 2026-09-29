@@ -36,6 +36,7 @@
       <button class="nav-link" data-section="testdrive">Test Drive</button>
       <button class="nav-link" data-section="booking">Booking</button>
       <button class="nav-link" data-section="sales">Retails</button>
+      <button class="nav-link" data-section="exchange">Exchange</button>
       <button class="nav-link" data-section="stock">Enquiry Wise Stock</button>
       <button class="nav-link" data-section="comparison">Month Comparison</button>
     </nav>
@@ -189,6 +190,10 @@
           <div class="filter-field">
             <label for="enqSource">Source</label>
             <select id="enqSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="enqAge">Enquiry aging days</label>
+            <select id="enqAge" class="filter-select"><option value="all">All enquiry ages</option></select>
           </div>
           <button id="enqReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
@@ -573,6 +578,117 @@
           <table class="comparison-table text-table" id="fuCancelTable">
             <thead id="fuCancelHead"></thead>
             <tbody id="fuCancelBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- EXCHANGE ---------- -->
+    <section class="view" id="view-exchange">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="exMonth">Month</label>
+            <select id="exMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="exModel">Model</label>
+            <select id="exModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="exConsultant">Consultant</label>
+            <select id="exConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="exSource">Source</label>
+            <select id="exSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="exReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
+      <div class="kpi-grid" id="exKpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Exchange opted</h3><p>Exchange opted (Y) vs not opted (N)</p></div>
+          <div class="chart-box"><canvas id="exSplitChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Present car</h3><p>Customers who own a car today (Present Car Y/N)</p></div>
+          <div class="chart-box"><canvas id="exPresentChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Scrap Y/N</h3><p>Among exchange-opted customers</p></div>
+          <div class="chart-box"><canvas id="exScrapChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Scrap through Hyundai Y/N</h3><p>Among customers who chose to scrap</p></div>
+          <div class="chart-box"><canvas id="exScrapHyundaiChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Maker name</h3><p>Make of the customers' present cars</p></div>
+          <div class="chart-box"><canvas id="exMakerChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Maker model</h3><p>Most common present car models</p></div>
+          <div class="chart-box"><canvas id="exMakerModelChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Model year</h3><p>Manufacturing year of the present cars</p></div>
+          <div class="chart-box"><canvas id="exYearChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Exchange by enquired model</h3><p>Which new model exchange customers are asking for</p></div>
+          <div class="chart-box"><canvas id="exModelChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Exchange details</h3>
+          <p id="exListSub">Customer-wise exchange, scrap and present car details</p>
+        </div>
+        <div class="tab-row" id="exScopeTabs">
+          <button class="tab-btn active" data-scope="exchange">Exchange opted</button>
+          <button class="tab-btn" data-scope="present">All present car owners</button>
+          <button class="tab-btn" data-scope="all">All enquiries</button>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table text-table" id="exListTable">
+            <thead><tr>
+              <th>Enquiry date</th><th>Customer</th><th>Phone</th><th>Consultant</th><th>Status</th>
+              <th>Model enquired</th><th>Exchange opted</th><th>Scrap Y/N</th><th>Scrap through Hyundai</th>
+              <th>Present car</th><th>Maker name</th><th>Maker model</th><th>Model year</th><th>Car age (yrs)</th>
+            </tr></thead>
+            <tbody id="exListBody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="exListHint"></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="ex">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="exBreakdownTable">
+            <thead id="exBreakdownHead"></thead>
+            <tbody id="exBreakdownBody"></tbody>
           </table>
         </div>
       </div>
