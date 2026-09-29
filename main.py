@@ -247,6 +247,41 @@ def api_enquiry_stock_export(
     )
 
 
+@app.get("/api/vehicle-stock/filters")
+def api_vehicle_stock_filters():
+    return dp.store.vehicle_stock_filter_options()
+
+
+@app.get("/api/vehicle-stock/kpis")
+def api_vehicle_stock_kpis(
+    model: Optional[str] = Query(default=None),
+    stage: Optional[str] = Query(default=None),
+    fuel_type: Optional[str] = Query(default=None),
+    financier: Optional[str] = Query(default=None),
+):
+    return dp.compute_vehicle_stock_kpis(model=model, stage=stage, fuel_type=fuel_type, financier=financier)
+
+
+@app.get("/api/vehicle-stock/analytics")
+def api_vehicle_stock_analytics(
+    model: Optional[str] = Query(default=None),
+    stage: Optional[str] = Query(default=None),
+    fuel_type: Optional[str] = Query(default=None),
+    financier: Optional[str] = Query(default=None),
+):
+    return dp.compute_vehicle_stock_analytics(model=model, stage=stage, fuel_type=fuel_type, financier=financier)
+
+
+@app.get("/api/vehicle-stock/breakdown")
+def api_vehicle_stock_breakdown(
+    model: Optional[str] = Query(default=None),
+    stage: Optional[str] = Query(default=None),
+    fuel_type: Optional[str] = Query(default=None),
+    financier: Optional[str] = Query(default=None),
+):
+    return dp.compute_vehicle_stock_breakdown(model=model, stage=stage, fuel_type=fuel_type, financier=financier)
+
+
 @app.post("/api/refresh")
 def api_refresh():
     dp.store.reload()

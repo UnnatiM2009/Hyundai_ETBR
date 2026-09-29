@@ -91,6 +91,12 @@ COLUMN_CANDIDATES = {
     "allocated": ["Allocated To", "Allocated Customer Name", "Allocated Customer", "Allocation Status",
                   "Allocated", "Bkng No", "Booking No", "Booking No.", "Booking ID", "Booking Number",
                   "Cust Name", "Customer Name", "Cust ID"],
+    # Optional extras - not used for matching, only for the Vehicle Stock inventory page.
+    # Missing entirely is fine; that field just won't be shown/filterable there.
+    "fuel_type": ["Fuel Type", "Fuel", "Fuel Emission"],
+    "financier": ["Financier Name", "Financier", "DSA/Financier", "Finance Company"],
+    "basic_price": ["Basic Price", "Basic Amount"],
+    "invoice_amt": ["HMIL Invoice Amt", "HMI Invoice Amt", "Invoice Amount", "Invoice Price"],
 }
 
 # Words in the stock-type column that mean the unit is not yet at the dealership
@@ -361,6 +367,12 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
     age_c = _find_col(raw, "age", exclude=used2)
     loc_c = _find_col(raw, "location", exclude=used2)
     alloc_c = _find_col(raw, "allocated", exclude=used2 + ((age_c,) if age_c else ()))
+    # Optional extras for the Vehicle Stock inventory page - never required, never
+    # used for matching, so a missing one just means that field is blank/0 there.
+    fuel_c = _find_col(raw, "fuel_type", exclude=used2)
+    financier_c = _find_col(raw, "financier", exclude=used2)
+    basic_price_c = _find_col(raw, "basic_price", exclude=used2)
+    invoice_amt_c = _find_col(raw, "invoice_amt", exclude=used2 + ((basic_price_c,) if basic_price_c else ()))
 
     warnings = []
     df = pd.DataFrame({
@@ -369,6 +381,12 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
         "Color": raw[color_c].map(_clean_text) if color_c else "",
         "Chassis": raw[chassis_c].map(_clean_text) if chassis_c else "",
         "Location": raw[loc_c].map(_clean_text) if loc_c else "",
+        "Fuel Type": raw[fuel_c].map(_clean_text) if fuel_c else "",
+        "Financier Name": raw[financier_c].map(_clean_text) if financier_c else "",
+        "Basic Price": (pd.to_numeric(raw[basic_price_c].astype(str).str.replace(",", "", regex=False),
+                                       errors="coerce").fillna(0.0) if basic_price_c else 0.0),
+        "HMIL Invoice Amt": (pd.to_numeric(raw[invoice_amt_c].astype(str).str.replace(",", "", regex=False),
+                                            errors="coerce").fillna(0.0) if invoice_amt_c else 0.0),
     })
     df = df[(df["Model"] != "") | (df["Variant"] != "")].reset_index(drop=True)
     raw = raw.loc[raw[model_c].notna() | raw[variant_c].notna()].reset_index(drop=True)
@@ -433,6 +451,7 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
         "columns_used": {
             "model": model_c, "variant": variant_c, "color": color_c, "chassis": chassis_c,
             "stock_type": type_c or (f"sheet name ({forced_type})" if forced_type else None), "age": age_c, "location": loc_c, "allocated": alloc_c,
+            "fuel_type": fuel_c, "financier": financier_c, "basic_price": basic_price_c, "invoice_amt": invoice_amt_c,
         },
         "warnings": warnings,
         "has_color": bool(color_c),

@@ -125,6 +125,16 @@ revenue, amount received, mode of purchase, invoice-to-delivery days.
   Model / Consultant / Source breakdown. Maker spellings are merged (HONDA = Honda).
   Note: the scrap questions are only filled for exchange customers, so Scrap charts are
   counted among exchange-opted customers.
+- **Vehicle Stock** *(new)* — plain inventory overview of the same Physical Stock / In
+  Transit sheets: KPI cards (Total Stock, Physical, In Transit, Physical Stock Value,
+  Avg. Stock Age, Aged 60+ days), charts (Physical vs Transit split, ageing buckets,
+  by model, fuel-type mix, top colors, financier mix), and a Model / Variant / Color
+  breakdown table (Physical, Transit, Total, Avg. Age, Stock Value). Its filter bar is
+  **Stage / Model / Fuel Type / Financier** rather than Month/Consultant/Source, since
+  stock is a point-in-time snapshot. This is a different question from the page below:
+  Vehicle Stock asks "what does our inventory look like", Enquiry Wise Stock asks "which
+  enquiry can this unit fulfil" — they read the same underlying stock data, just for
+  different purposes.
 - **Enquiry Wise Stock** *(new)* — see below.
 - **Month Comparison** — every key metric, previous vs current month, filterable.
 
@@ -169,6 +179,12 @@ A VIN on both sheets is counted once, as Physical. Uploading a new workbook repl
 older separate Stock.xlsx; a separate Stock.xlsx (single sheet with a Physical / In Transit
 column) is still accepted if you prefer. If a model is spelled differently in stock and
 enquiry and can't be reconciled automatically, add it to `MODEL_ALIASES` in `stock_engine.py`.
+
+For the **Vehicle Stock** page specifically, four more columns are detected the same
+fuzzy, case-insensitive way if present — **Fuel Type**, **Financier Name**, **Basic
+Price**, **HMIL Invoice Amt** — none of them required, and none used by the matching
+engine above. A stock file without them still works; those specific charts/KPIs just
+show 0 or are omitted.
 
 ---
 

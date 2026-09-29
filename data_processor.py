@@ -431,6 +431,21 @@ class DashboardData:
             "sources": clean(set(e["Source"].dropna().astype(str).str.strip())),
         }
 
+    # ------------------------------------------------------------------- #
+    def vehicle_stock_filter_options(self) -> dict:
+        """Distinct Model / Fuel Type / Financier values in the stock sheet,
+        for the Vehicle Stock page's own filter bar (Stage/Model/Fuel/Financier
+        rather than Month/Consultant/Source - stock is a point-in-time
+        snapshot, not something that naturally splits by month)."""
+        clean = lambda vals: sorted(v for v in vals if v and v.lower() not in ("nan", "none", ""))
+        if self.stock.empty:
+            return {"models": [], "fuel_types": [], "financiers": []}
+        return {
+            "models": clean(self.stock["Model"].dropna().astype(str).str.strip().unique().tolist()),
+            "fuel_types": clean(self.stock["Fuel Type"].dropna().astype(str).str.strip().unique().tolist()),
+            "financiers": clean(self.stock["Financier Name"].dropna().astype(str).str.strip().unique().tolist()),
+        }
+
 
 # A single shared instance the whole app reads from.
 store = DashboardData()
@@ -1173,3 +1188,139 @@ def export_enquiry_stock(model: Optional[str] = None, consultant: Optional[str] 
     if not result["stock_loaded"]:
         raise ValueError(result.get("message") or "No stock file loaded.")
     return se.export_workbook(result, store.stock)
+
+
+# --------------------------------------------------------------------------- #
+# Vehicle Stock — plain inventory analytics (Physical vs In Transit), distinct
+# from the Enquiry Wise Stock demand-matching page above. This answers "what
+# does our inventory look like" (aging, value, model/fuel/color/financier
+# mix) rather than "which enquiry can this unit fulfil". It reads the same
+# `store.stock` dataframe stock_engine.py already builds, so there is only
+# one stock-loading path in the whole app.
+# --------------------------------------------------------------------------- #
+
+STOCK_AGE_BUCKETS = [(-1, 15, "0-15 days"), (15, 30, "16-30 days"), (30, 60, "31-60 days"),
+                     (60, 90, "61-90 days"), (90, 10_000, "90+ days")]
+
+
+def _filter_vehicle_stock(model: Optional[str] = None, stage: Optional[str] = None,
+                           fuel_type: Optional[str] = None, financier: Optional[str] = None) -> pd.DataFrame:
+    df = store.stock
+    if df.empty:
+        return df
+    if model and model != "all":
+        df = df[df["Model"] == model]
+    if stage and stage != "all":
+        df = df[df["Stock Type"] == stage]
+    if fuel_type and fuel_type != "all":
+        df = df[df["Fuel Type"] == fuel_type]
+    if financier and financier != "all":
+        df = df[df["Financier Name"] == financier]
+    return df
+
+
+def compute_vehicle_stock_kpis(model: Optional[str] = None, stage: Optional[str] = None,
+                                fuel_type: Optional[str] = None, financier: Optional[str] = None) -> dict:
+    df = _filter_vehicle_stock(model, stage, fuel_type, financier)
+    if df.empty:
+        return {
+            "total_stock": 0, "physical_count": 0, "transit_count": 0,
+            "free_count": 0, "allocated_count": 0,
+            "physical_value": 0.0, "transit_value": 0.0,
+            "avg_stock_age_days": 0.0, "aged_60_plus": 0, "aged_90_plus": 0, "aged_60_plus_rate": 0.0,
+        }
+
+    physical = df[df["Stock Type"] == se.PHYSICAL]
+    transit = df[df["Stock Type"] == se.TRANSIT]
+    physical_count = int(len(physical))
+
+    avg_age = float(physical["Age"].mean()) if physical_count else 0.0
+    aged_60 = int((physical["Age"] >= 60).sum()) if physical_count else 0
+    aged_90 = int((physical["Age"] >= 90).sum()) if physical_count else 0
+
+    return {
+        "total_stock": int(len(df)),
+        "physical_count": physical_count,
+        "transit_count": int(len(transit)),
+        "free_count": int((df["Alloc"] == se.FREE).sum()),
+        "allocated_count": int((df["Alloc"] == se.ALLOC).sum()),
+        "physical_value": round(float(physical["HMIL Invoice Amt"].sum()), 2),
+        "transit_value": round(float(transit["HMIL Invoice Amt"].sum()), 2),
+        "avg_stock_age_days": round(avg_age, 1),
+        "aged_60_plus": aged_60,
+        "aged_90_plus": aged_90,
+        "aged_60_plus_rate": _safe_div(aged_60, physical_count),
+    }
+
+
+def compute_vehicle_stock_analytics(model: Optional[str] = None, stage: Optional[str] = None,
+                                     fuel_type: Optional[str] = None, financier: Optional[str] = None) -> dict:
+    df = _filter_vehicle_stock(model, stage, fuel_type, financier)
+    if df.empty:
+        return {
+            "stage_split": {"Physical": 0, "Transit": 0},
+            "by_model": [], "aging_buckets": [], "fuel_breakdown": [],
+            "color_breakdown": [], "financier_breakdown": [],
+        }
+
+    stage_split = {
+        "Physical": int((df["Stock Type"] == se.PHYSICAL).sum()),
+        "Transit": int((df["Stock Type"] == se.TRANSIT).sum()),
+    }
+    by_model = [{"label": k, "value": int(v)} for k, v in df["Model"].value_counts().items() if k]
+
+    physical = df[df["Stock Type"] == se.PHYSICAL]
+    aging_buckets = []
+    if not physical.empty:
+        labels = [b[2] for b in STOCK_AGE_BUCKETS]
+        bins = [b[0] for b in STOCK_AGE_BUCKETS] + [STOCK_AGE_BUCKETS[-1][1]]
+        bucketed = pd.cut(physical["Age"], bins=bins, labels=labels)
+        counts = bucketed.value_counts().reindex(labels)
+        aging_buckets = [{"label": str(k), "value": int(v)} for k, v in counts.items()]
+
+    fuel_breakdown = [{"label": k, "value": int(v)} for k, v in df["Fuel Type"].value_counts().items() if k]
+    color_breakdown = [{"label": k, "value": int(v)} for k, v in df["Color"].value_counts().head(10).items() if k]
+    financier_breakdown = [{"label": k, "value": int(v)} for k, v in df["Financier Name"].value_counts().items() if k]
+
+    return {
+        "stage_split": stage_split,
+        "by_model": by_model,
+        "aging_buckets": aging_buckets,
+        "fuel_breakdown": fuel_breakdown,
+        "color_breakdown": color_breakdown,
+        "financier_breakdown": financier_breakdown,
+    }
+
+
+def _vehicle_stock_group_row(label: str, sub: pd.DataFrame) -> dict:
+    physical = sub[sub["Stock Type"] == se.PHYSICAL]
+    transit = sub[sub["Stock Type"] == se.TRANSIT]
+    avg_age = float(physical["Age"].mean()) if len(physical) else 0.0
+    value = float(physical["HMIL Invoice Amt"].sum())
+    return {
+        "label": label,
+        "physical": int(len(physical)),
+        "transit": int(len(transit)),
+        "total": int(len(sub)),
+        "avg_age_days": round(avg_age, 1),
+        "stock_value": round(value, 2),
+    }
+
+
+def compute_vehicle_stock_breakdown(model: Optional[str] = None, stage: Optional[str] = None,
+                                     fuel_type: Optional[str] = None, financier: Optional[str] = None,
+                                     limit: int = 20) -> dict:
+    """Model / Variant / Color breakdown - the dimensions a dealership plans
+    allocation around - each row split into Physical / Transit counts, avg.
+    age of the physical units, and their stock value."""
+    df = _filter_vehicle_stock(model, stage, fuel_type, financier)
+    result = {"by_model": [], "by_variant": [], "by_color": []}
+    if df.empty:
+        return result
+
+    for dim_key, col in (("by_model", "Model"), ("by_variant", "Variant"), ("by_color", "Color")):
+        rows = [_vehicle_stock_group_row(k, sub) for k, sub in df.groupby(col) if k]
+        rows.sort(key=lambda r: r["total"], reverse=True)
+        result[dim_key] = rows[:limit]
+
+    return result
