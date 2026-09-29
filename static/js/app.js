@@ -5,13 +5,64 @@
    ========================================================================== */
 
 const state = {
-  period: "current_month",
   meta: null,
-  comparison: null,
-  charts: {},          // chart.js instances keyed by canvas id
+  filterOptions: null,
+  breakdownCache: {},   // per-prefix cached {by_model, by_consultant, by_source}
+  charts: {},           // chart.js instances keyed by canvas id
   loadedSections: new Set(),
   gaugeLength: null,
 };
+
+/* Every section that has its own Month / Model / Consultant / Source filter
+   bar, keyed by the id prefix used in its <select> elements, mapped to the
+   section key used elsewhere (SECTION_LOADERS, /api/breakdown?section=...). */
+const PREFIX_TO_SECTION = {
+  ov: "overview", enq: "enquiry", td: "testdrive", book: "booking", sales: "sales",
+  conv: "conversion",
+};
+
+/* Column layout for the Model/Consultant/Source breakdown table on each page —
+   the metrics that matter differ per section, so each gets its own column set. */
+const BREAKDOWN_COLUMNS = {
+  overview: [
+    { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "bookings", label: "Bookings", fmt: (v) => fmtInt(v) },
+    { key: "retail", label: "Retail", fmt: (v) => fmtInt(v) },
+    { key: "revenue", label: "Revenue", fmt: (v) => fmtMoney(v) },
+  ],
+  enquiry: [
+    { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "test_drives", label: "Test Drives", fmt: (v) => fmtInt(v) },
+    { key: "test_drive_rate", label: "TD Rate", fmt: (v) => fmtPct(v) },
+    { key: "lost", label: "Lost", fmt: (v) => fmtInt(v) },
+    { key: "lost_rate", label: "Lost Rate", fmt: (v) => fmtPct(v) },
+  ],
+  testdrive: [
+    { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "test_drives", label: "Test Drives Done", fmt: (v) => fmtInt(v) },
+    { key: "test_drive_rate", label: "TD Rate", fmt: (v) => fmtPct(v) },
+    { key: "booked_from_td", label: "Booked (of TD)", fmt: (v) => fmtInt(v) },
+  ],
+  booking: [
+    { key: "bookings", label: "Bookings", fmt: (v) => fmtInt(v) },
+    { key: "amount_received", label: "Amount Received", fmt: (v) => fmtMoney(v) },
+    { key: "avg_booking_age", label: "Avg. Booking Age", fmt: (v) => `${v} days` },
+  ],
+  sales: [
+    { key: "units", label: "Units", fmt: (v) => fmtInt(v) },
+    { key: "revenue", label: "Revenue", fmt: (v) => fmtMoney(v) },
+    { key: "avg_delivery_days", label: "Avg. Delivery", fmt: (v) => `${v} days` },
+  ],
+  conversion: [
+    { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "e2t", label: "E2T %", fmt: (v) => fmtPct(v) },
+    { key: "e2b", label: "E2B %", fmt: (v) => fmtPct(v) },
+    { key: "e2r", label: "E2R %", fmt: (v) => fmtPct(v) },
+    { key: "b2r", label: "B2R %", fmt: (v) => fmtPct(v) },
+  ],
+};
+
+const DIM_LABELS = { model: "Model", consultant: "Consultant", source: "Source" };
 
 /* ---------------------------------------------------------------------- */
 /* Formatting helpers                                                      */
@@ -188,13 +239,20 @@ function renderGauge(pct, done, total) {
 /* ---------------------------------------------------------------------- */
 /* Section loaders                                                         */
 /* ---------------------------------------------------------------------- */
+function apiParams(f) {
+  return new URLSearchParams({ period: f.month, model: f.model, consultant: f.consultant, source: f.source }).toString();
+}
+
 async function loadOverview() {
+  await populateFilterBar("ov");
+  const f = readFilterBar("ov");
+  const qs = apiParams(f);
+
   const [kpis, enquiry, comparison] = await Promise.all([
-    getJSON(`/api/kpis?period=${state.period}`),
-    getJSON(`/api/enquiry?period=${state.period}`),
-    state.comparison ? Promise.resolve(state.comparison) : getJSON("/api/comparison"),
+    getJSON(`/api/kpis?${qs}`),
+    getJSON(`/api/enquiry?${qs}`),
+    fetchComparisonFor("ov"),
   ]);
-  state.comparison = comparison;
   const cmp = cmpLookup(comparison);
 
   renderKpiGrid("kpiGrid", [
@@ -226,15 +284,21 @@ async function loadOverview() {
   const sources = enquiry.source_breakdown || [];
   doughnutChart("overviewSourceChart", sources.map(s => s.label), sources.map(s => s.value),
     [cssVar("--blue"), cssVar("--amber"), cssVar("--green"), cssVar("--purple"), cssVar("--red"), "#999"]);
+
+  await loadBreakdownFor("ov", "overview", f);
+  await loadBreakdownFor("conv", "conversion", f);
 }
 
 async function loadTestDrive() {
+  await populateFilterBar("td");
+  const f = readFilterBar("td");
+  const qs = apiParams(f);
+
   const [kpis, td, comparison] = await Promise.all([
-    getJSON(`/api/kpis?period=${state.period}`),
-    getJSON(`/api/test-drive?period=${state.period}`),
-    state.comparison ? Promise.resolve(state.comparison) : getJSON("/api/comparison"),
+    getJSON(`/api/kpis?${qs}`),
+    getJSON(`/api/test-drive?${qs}`),
+    fetchComparisonFor("td"),
   ]);
-  state.comparison = comparison;
   const cmp = cmpLookup(comparison);
 
   renderKpiGrid("tdKpiGrid", [
@@ -263,16 +327,21 @@ async function loadTestDrive() {
   const bySource = td.by_source || [];
   barChart("tdSourceChart", bySource.map(m => m.label), bySource.map(m => m.value), cssVar("--green"), false);
 
-  renderFunnel("tdFunnel", (td.funnel || []).map(f => ({ stage: f.stage, value: f.value })));
+  renderFunnel("tdFunnel", (td.funnel || []).map(fr => ({ stage: fr.stage, value: fr.value })));
+
+  await loadBreakdownFor("td", "testdrive", f);
 }
 
 async function loadEnquiry() {
+  await populateFilterBar("enq");
+  const f = readFilterBar("enq");
+  const qs = apiParams(f);
+
   const [kpis, enquiry, comparison] = await Promise.all([
-    getJSON(`/api/kpis?period=${state.period}`),
-    getJSON(`/api/enquiry?period=${state.period}`),
-    state.comparison ? Promise.resolve(state.comparison) : getJSON("/api/comparison"),
+    getJSON(`/api/kpis?${qs}`),
+    getJSON(`/api/enquiry?${qs}`),
+    fetchComparisonFor("enq"),
   ]);
-  state.comparison = comparison;
   const cmp = cmpLookup(comparison);
 
   renderKpiGrid("enqKpiGrid", [
@@ -296,15 +365,20 @@ async function loadEnquiry() {
 
   const lost = enquiry.lost_reasons || [];
   barChart("enqLostChart", lost.map(l => l.label), lost.map(l => l.value), cssVar("--red"));
+
+  await loadBreakdownFor("enq", "enquiry", f);
 }
 
 async function loadBooking() {
+  await populateFilterBar("book");
+  const f = readFilterBar("book");
+  const qs = apiParams(f);
+
   const [kpis, booking, comparison] = await Promise.all([
-    getJSON(`/api/kpis?period=${state.period}`),
-    getJSON(`/api/booking?period=${state.period}`),
-    state.comparison ? Promise.resolve(state.comparison) : getJSON("/api/comparison"),
+    getJSON(`/api/kpis?${qs}`),
+    getJSON(`/api/booking?${qs}`),
+    fetchComparisonFor("book"),
   ]);
-  state.comparison = comparison;
   const cmp = cmpLookup(comparison);
 
   renderKpiGrid("bookKpiGrid", [
@@ -313,9 +387,9 @@ async function loadBooking() {
     { label: "Booking → retail", value: fmtPct(kpis.booking_to_retail_rate), color: "var(--purple)",
       sub: deltaHtml(cmp["Booking to Retail Conv. (%)"]?.change_pct, cmp["Booking to Retail Conv. (%)"]?.direction) },
     { label: "Avg. booking age", value: `${kpis.avg_booking_age_days} days`, color: "var(--blue)",
-      sub: "days since enquiry, this period" },
+      sub: "days since enquiry, this selection" },
     { label: "Amount received", value: fmtMoney(booking.total_amount_received), color: "var(--green)",
-      sub: "advance collected, this period" },
+      sub: "advance collected, this selection" },
   ]);
 
   const mode = booking.mode_of_purchase || [];
@@ -330,15 +404,20 @@ async function loadBooking() {
 
   const trend = booking.daily_trend || [];
   lineChart("bookTrendChart", trend.map(t => fmtShortDate(t.date)), trend.map(t => t.value), cssVar("--green"));
+
+  await loadBreakdownFor("book", "booking", f);
 }
 
 async function loadSales() {
+  await populateFilterBar("sales");
+  const f = readFilterBar("sales");
+  const qs = apiParams(f);
+
   const [kpis, sales, comparison] = await Promise.all([
-    getJSON(`/api/kpis?period=${state.period}`),
-    getJSON(`/api/sales?period=${state.period}`),
-    state.comparison ? Promise.resolve(state.comparison) : getJSON("/api/comparison"),
+    getJSON(`/api/kpis?${qs}`),
+    getJSON(`/api/sales?${qs}`),
+    fetchComparisonFor("sales"),
   ]);
-  state.comparison = comparison;
   const cmp = cmpLookup(comparison);
 
   renderKpiGrid("salesKpiGrid", [
@@ -347,7 +426,7 @@ async function loadSales() {
     { label: "Revenue", value: fmtMoney(kpis.total_revenue), color: "var(--green)",
       sub: deltaHtml(cmp["Total Revenue"]?.change_pct, cmp["Total Revenue"]?.direction) },
     { label: "Avg. delivery time", value: `${sales.avg_delivery_days} days`, color: "var(--blue)",
-      sub: "invoice to delivery, this period" },
+      sub: "invoice to delivery, this selection" },
   ]);
 
   const revByModel = sales.revenue_by_model || [];
@@ -362,6 +441,8 @@ async function loadSales() {
   const bySource = sales.by_source || [];
   doughnutChart("salesSourceChart", bySource.map(s => s.label), bySource.map(s => s.value),
     [cssVar("--blue"), cssVar("--amber"), cssVar("--green"), cssVar("--purple"), "#999"]);
+
+  await loadBreakdownFor("sales", "sales", f);
 }
 
 function renderComparisonTable(comparison) {
@@ -372,7 +453,7 @@ function renderComparisonTable(comparison) {
 
   const moneyRows = new Set(["Total Revenue"]);
   const pctRows = new Set(["Test Drive Rate (%)", "Enquiry to Booking Conv. (%)",
-    "Booking to Retail Conv. (%)", "Test Drive to Booking Conv. (%)"]);
+    "Enquiry to Retail Conv. (%)", "Booking to Retail Conv. (%)", "Test Drive to Booking Conv. (%)"]);
 
   const fmtCell = (metric, v) => {
     if (moneyRows.has(metric)) return fmtMoney(v);
@@ -407,52 +488,116 @@ function renderComparisonTable(comparison) {
       : "";
 }
 
-/* Populate the Month / Model / Consultant / Source dropdowns. Rebuilt fresh
-   every time this section (re)loads — e.g. after an upload adds a new month
-   or a model that wasn't there before — while preserving the user's current
-   selection when it's still valid. Independent of the KPI-card comparison
-   (state.comparison) used elsewhere, so filtering here never affects the
-   vs-last-month badges on other tabs. */
-async function populateComparisonFilters() {
-  state.filterOptions = await getJSON("/api/filters");
+async function fetchComparisonFor(prefix) {
+  const f = readFilterBar(prefix);
+  const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source });
+  return getJSON(`/api/comparison?${params.toString()}`);
+}
+
+async function refreshComparisonView() {
+  const comparison = await fetchComparisonFor("cmp");
+  renderComparisonTable(comparison);
+}
+
+async function loadComparison() {
+  await populateFilterBar("cmp");
+  await refreshComparisonView();
+}
+
+/* Populate the Month / Model / Consultant / Source dropdowns for a given
+   prefix (e.g. "ov", "td", "cmp"). Rebuilt fresh every time a section
+   (re)loads — e.g. after an upload adds a new month or model — while
+   preserving the user's current selection when it's still valid. Each
+   section's filters are independent of every other section's. */
+async function populateFilterBar(prefix) {
+  if (!document.getElementById(`${prefix}Month`)) return; // section has no filter bar
+  if (!state.filterOptions) {
+    state.filterOptions = await getJSON("/api/filters");
+  }
 
   const fillSelect = (sel, values, allLabel) => {
+    if (!sel) return;
     const previous = sel.value;
     sel.innerHTML = "";
     if (allLabel) sel.appendChild(new Option(allLabel, "all"));
     values.forEach(v => sel.appendChild(new Option(v.label ?? v, v.value ?? v)));
     const stillValid = Array.from(sel.options).some(o => o.value === previous);
-    sel.value = stillValid ? previous : sel.options[0]?.value ?? "";
+    sel.value = stillValid ? previous : (sel.options[0]?.value ?? "");
   };
 
-  const monthSel = document.getElementById("cmpMonth");
+  const monthSel = document.getElementById(`${prefix}Month`);
   const wasEmpty = !monthSel.value;
   fillSelect(monthSel, state.meta.available_periods.slice().reverse(), null);
   if (wasEmpty) monthSel.value = state.meta.current_period;
 
-  fillSelect(document.getElementById("cmpModel"), state.filterOptions.models, "All models");
-  fillSelect(document.getElementById("cmpConsultant"), state.filterOptions.consultants, "All consultants");
-  fillSelect(document.getElementById("cmpSource"), state.filterOptions.sources, "All sources");
+  fillSelect(document.getElementById(`${prefix}Model`), state.filterOptions.models, "All models");
+  fillSelect(document.getElementById(`${prefix}Consultant`), state.filterOptions.consultants, "All consultants");
+  fillSelect(document.getElementById(`${prefix}Source`), state.filterOptions.sources, "All sources");
 }
 
-async function fetchFilteredComparison() {
-  const params = new URLSearchParams({
-    month: document.getElementById("cmpMonth").value,
-    model: document.getElementById("cmpModel").value,
-    consultant: document.getElementById("cmpConsultant").value,
-    source: document.getElementById("cmpSource").value,
+/* Read a section's current filter selections straight from its <select>s. */
+function readFilterBar(prefix) {
+  return {
+    month: document.getElementById(`${prefix}Month`)?.value || state.meta.current_period,
+    model: document.getElementById(`${prefix}Model`)?.value || "all",
+    consultant: document.getElementById(`${prefix}Consultant`)?.value || "all",
+    source: document.getElementById(`${prefix}Source`)?.value || "all",
+  };
+}
+
+/* Wire the change events + Reset button for one section's filter bar. Called
+   once at boot for every section that has one. */
+function attachFilterBar(prefix, onChange) {
+  if (!document.getElementById(`${prefix}Month`)) return;
+  ["Month", "Model", "Consultant", "Source"].forEach(suffix => {
+    document.getElementById(`${prefix}${suffix}`).addEventListener("change", onChange);
   });
-  return getJSON(`/api/comparison?${params.toString()}`);
+  const resetBtn = document.getElementById(`${prefix}Reset`);
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      document.getElementById(`${prefix}Model`).value = "all";
+      document.getElementById(`${prefix}Consultant`).value = "all";
+      document.getElementById(`${prefix}Source`).value = "all";
+      document.getElementById(`${prefix}Month`).value = state.meta.current_period;
+      await onChange();
+    });
+  }
 }
 
-async function refreshComparisonView() {
-  const comparison = await fetchFilteredComparison();
-  renderComparisonTable(comparison);
+/* ---------------------------------------------------------------------- */
+/* Breakdown tables (Model wise / Consultant wise / Source wise)           */
+/* ---------------------------------------------------------------------- */
+function renderBreakdownTable(prefix, section, data, activeDim) {
+  const head = document.getElementById(`${prefix}BreakdownHead`);
+  const body = document.getElementById(`${prefix}BreakdownBody`);
+  if (!head || !body) return;
+
+  const cols = BREAKDOWN_COLUMNS[section];
+  const rows = (data && data[`by_${activeDim}`]) || [];
+
+  head.innerHTML = `<tr><th>${DIM_LABELS[activeDim]}</th>${cols.map(c => `<th>${c.label}</th>`).join("")}</tr>`;
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${cols.length + 1}" class="empty-cell">No data for this selection.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.label}</td>
+      ${cols.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
+    </tr>
+  `).join("");
 }
 
-async function loadComparison() {
-  await populateComparisonFilters();
-  await refreshComparisonView();
+async function loadBreakdownFor(prefix, section, filters) {
+  const params = new URLSearchParams({
+    section, period: filters.month, model: filters.model,
+    consultant: filters.consultant, source: filters.source,
+  });
+  const data = await getJSON(`/api/breakdown?${params.toString()}`);
+  state.breakdownCache[prefix] = data;
+  const activeBtn = document.querySelector(`[data-tabgroup="${prefix}"] .tab-btn.active`);
+  renderBreakdownTable(prefix, section, data, activeBtn ? activeBtn.dataset.dim : "model");
 }
 
 const SECTION_LOADERS = {
@@ -493,7 +638,6 @@ async function showSection(name, { force = false } = {}) {
 }
 
 async function reloadAllLoadedSections() {
-  state.comparison = null; // force a fresh comparison fetch too
   const loaded = Array.from(state.loadedSections);
   state.loadedSections.clear();
   const active = document.querySelector(".nav-link.active")?.dataset.section || "overview";
@@ -507,25 +651,11 @@ async function reloadAllLoadedSections() {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Meta / period select / sync status                                      */
+/* Meta / sync status                                                       */
 /* ---------------------------------------------------------------------- */
 async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
-
-  const select = document.getElementById("periodSelect");
-  select.innerHTML = "";
-  const opts = [
-    { value: "current_month", label: `Current month (${meta.current_period_label})` },
-    { value: "last_month", label: `Last month (${meta.previous_period_label})` },
-    { value: "all", label: "All available data" },
-  ];
-  opts.forEach(o => {
-    const opt = document.createElement("option");
-    opt.value = o.value; opt.textContent = o.label;
-    select.appendChild(opt);
-  });
-  select.value = state.period;
 
   document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)}`;
   document.getElementById("dealerCode").textContent =
@@ -620,12 +750,6 @@ async function boot() {
     document.getElementById("sidebarBackdrop").classList.remove("open");
   });
 
-  document.getElementById("periodSelect").addEventListener("change", async (e) => {
-    state.period = e.target.value;
-    const active = document.querySelector(".nav-link.active")?.dataset.section || "overview";
-    await showSection(active, { force: true });
-  });
-
   document.getElementById("refreshBtn").addEventListener("click", async () => {
     const dot = document.getElementById("syncDot");
     dot.classList.add("stale");
@@ -635,16 +759,26 @@ async function boot() {
     dot.classList.remove("stale");
   });
 
-  ["cmpMonth", "cmpModel", "cmpConsultant", "cmpSource"].forEach(id => {
-    document.getElementById(id).addEventListener("change", refreshComparisonView);
-  });
+  // Every page's own Month / Model / Consultant / Source filter bar
+  attachFilterBar("ov", loadOverview);
+  attachFilterBar("enq", loadEnquiry);
+  attachFilterBar("td", loadTestDrive);
+  attachFilterBar("book", loadBooking);
+  attachFilterBar("sales", loadSales);
+  attachFilterBar("cmp", refreshComparisonView);
 
-  document.getElementById("cmpReset").addEventListener("click", async () => {
-    document.getElementById("cmpModel").value = "all";
-    document.getElementById("cmpConsultant").value = "all";
-    document.getElementById("cmpSource").value = "all";
-    document.getElementById("cmpMonth").value = state.meta.current_period;
-    await refreshComparisonView();
+  // Model / Consultant / Source tabs under each page's breakdown table
+  document.querySelectorAll(".tab-row[data-tabgroup]").forEach(row => {
+    row.addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab-btn");
+      if (!btn) return;
+      row.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const prefix = row.dataset.tabgroup;
+      const section = PREFIX_TO_SECTION[prefix];
+      const cached = state.breakdownCache[prefix];
+      if (cached) renderBreakdownTable(prefix, section, cached, btn.dataset.dim);
+    });
   });
 
   await loadMeta();

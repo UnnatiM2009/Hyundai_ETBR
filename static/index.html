@@ -39,9 +39,6 @@
     </nav>
 
     <div class="sidebar-footer">
-      <label class="field-label" for="periodSelect">Viewing period</label>
-      <select id="periodSelect" class="period-select"></select>
-
       <button id="uploadBtn" class="ghost-btn">Update monthly data</button>
       <button id="refreshBtn" class="ghost-btn">Refresh</button>
 
@@ -67,6 +64,27 @@
 
     <!-- ---------- OVERVIEW ---------- -->
     <section class="view active" id="view-overview">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="ovMonth">Month</label>
+            <select id="ovMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="ovModel">Model</label>
+            <select id="ovModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="ovConsultant">Consultant</label>
+            <select id="ovConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="ovSource">Source</label>
+            <select id="ovSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="ovReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
       <div class="kpi-grid" id="kpiGrid"></div>
 
       <div class="panel-grid two-col">
@@ -112,11 +130,69 @@
           <div class="chart-box"><canvas id="overviewSourceChart"></canvas></div>
         </div>
       </div>
-    </section>
+    
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="ov">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="ovBreakdownTable">
+            <thead id="ovBreakdownHead"></thead>
+            <tbody id="ovBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Conversion rates</h3>
+          <p>E2T = Enquiry→Test Drive · E2B = Enquiry→Booking · E2R = Enquiry→Retail · B2R = Booking→Retail</p>
+        </div>
+        <div class="tab-row" data-tabgroup="conv">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="convBreakdownTable">
+            <thead id="convBreakdownHead"></thead>
+            <tbody id="convBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+</section>
 
     <!-- ---------- ENQUIRY ---------- -->
     <section class="view" id="view-enquiry">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="enqMonth">Month</label>
+            <select id="enqMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="enqModel">Model</label>
+            <select id="enqModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="enqConsultant">Consultant</label>
+            <select id="enqConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="enqSource">Source</label>
+            <select id="enqSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="enqReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
       <div class="kpi-grid" id="enqKpiGrid"></div>
+
       <div class="panel-grid two-col">
         <div class="panel">
           <div class="panel-head"><h3>Enquiry status breakdown</h3></div>
@@ -137,10 +213,49 @@
           <div class="chart-box"><canvas id="enqLostChart"></canvas></div>
         </div>
       </div>
-    </section>
+    
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="enq">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="enqBreakdownTable">
+            <thead id="enqBreakdownHead"></thead>
+            <tbody id="enqBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+</section>
 
     <!-- ---------- TEST DRIVE ---------- -->
     <section class="view" id="view-testdrive">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="tdMonth">Month</label>
+            <select id="tdMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="tdModel">Model</label>
+            <select id="tdModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="tdConsultant">Consultant</label>
+            <select id="tdConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="tdSource">Source</label>
+            <select id="tdSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="tdReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
       <div class="kpi-grid" id="tdKpiGrid"></div>
 
       <div class="panel-grid two-col">
@@ -189,11 +304,51 @@
           <div id="tdFunnel" class="funnel"></div>
         </div>
       </div>
-    </section>
+    
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="td">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="tdBreakdownTable">
+            <thead id="tdBreakdownHead"></thead>
+            <tbody id="tdBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+</section>
 
     <!-- ---------- BOOKING ---------- -->
     <section class="view" id="view-booking">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="bookMonth">Month</label>
+            <select id="bookMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="bookModel">Model</label>
+            <select id="bookModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="bookConsultant">Consultant</label>
+            <select id="bookConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="bookSource">Source</label>
+            <select id="bookSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="bookReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
       <div class="kpi-grid" id="bookKpiGrid"></div>
+
       <div class="panel-grid two-col">
         <div class="panel">
           <div class="panel-head"><h3>Mode of purchase</h3></div>
@@ -214,11 +369,51 @@
           <div class="chart-box"><canvas id="bookTrendChart"></canvas></div>
         </div>
       </div>
-    </section>
+    
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="book">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="bookBreakdownTable">
+            <thead id="bookBreakdownHead"></thead>
+            <tbody id="bookBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+</section>
 
     <!-- ---------- SALES ---------- -->
     <section class="view" id="view-sales">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="salesMonth">Month</label>
+            <select id="salesMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="salesModel">Model</label>
+            <select id="salesModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="salesConsultant">Consultant</label>
+            <select id="salesConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="salesSource">Source</label>
+            <select id="salesSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <button id="salesReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
       <div class="kpi-grid" id="salesKpiGrid"></div>
+
       <div class="panel-grid two-col">
         <div class="panel">
           <div class="panel-head"><h3>Revenue by model</h3></div>
@@ -239,7 +434,25 @@
           <div class="chart-box"><canvas id="salesSourceChart"></canvas></div>
         </div>
       </div>
-    </section>
+    
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Breakdown</h3>
+          <p>Model, consultant and source detail for the current filters</p>
+        </div>
+        <div class="tab-row" data-tabgroup="sales">
+          <button class="tab-btn active" data-dim="model">By Model</button>
+          <button class="tab-btn" data-dim="consultant">By Consultant</button>
+          <button class="tab-btn" data-dim="source">By Source</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="salesBreakdownTable">
+            <thead id="salesBreakdownHead"></thead>
+            <tbody id="salesBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+</section>
 
     <!-- ---------- COMPARISON ---------- -->
     <section class="view" id="view-comparison">

@@ -342,8 +342,9 @@ canvas { max-width: 100%; }
 .hint { font-size: 0.8rem; color: var(--ink-faint); margin-top: 14px; }
 
 /* ==========================================================================
-   Filter bar (Month Comparison page)
+   Filter bar (Month / Model / Consultant / Source — used on every page)
    ========================================================================== */
+.filter-panel { padding: 18px 22px; margin-bottom: 20px; }
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -353,6 +354,10 @@ canvas { max-width: 100%; }
   padding-bottom: 18px;
   border-bottom: 1px solid var(--border);
 }
+/* Inside its own standalone .filter-panel (every page but Comparison), the
+   panel's own border already separates it from what follows — no need for
+   a second, redundant divider directly under the controls. */
+.filter-panel .filter-bar { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
 .filter-field {
   display: flex;
   flex-direction: column;
@@ -380,6 +385,31 @@ canvas { max-width: 100%; }
   height: 38px;
 }
 .light-ghost:hover { background: var(--border); color: var(--ink); }
+
+/* ==========================================================================
+   Breakdown table tabs (Model / Consultant / Source)
+   ========================================================================== */
+.tab-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 9px 4px;
+  margin-bottom: -1px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+}
+.tab-btn + .tab-btn { margin-left: 14px; }
+.tab-btn:hover { color: var(--ink); }
+.tab-btn.active { color: var(--amber); border-bottom-color: var(--amber); }
+.empty-cell { text-align: center !important; color: var(--ink-faint); padding: 22px 0 !important; }
 
 /* ==========================================================================
    Upload modal
@@ -482,9 +512,14 @@ canvas { max-width: 100%; }
   .funnel-label { font-size: 0.76rem; }
   .funnel-value { font-size: 0.82rem; }
 
+  .filter-panel { padding: 14px 14px 16px; }
   .filter-bar { gap: 10px; }
   .filter-field { min-width: 0; flex: 1 1 calc(50% - 10px); }
   .filter-select, .light-ghost { width: 100%; }
+
+  .tab-row { gap: 4px; overflow-x: auto; white-space: nowrap; }
+  .tab-btn { padding: 8px 2px; font-size: 0.82rem; }
+  .tab-btn + .tab-btn { margin-left: 10px; }
 
   .comparison-table { font-size: 0.82rem; }
   .comparison-table th, .comparison-table td { padding: 10px 8px; }
