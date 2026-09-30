@@ -457,6 +457,25 @@ input[type="date"].filter-select { min-height: 38px; }
 .tab-btn + .tab-btn { margin-left: 14px; }
 .tab-btn:hover { color: var(--ink); }
 .tab-btn.active { color: var(--amber); border-bottom-color: var(--amber); }
+/* Vehicle Stock > By Color : expandable colour rows listing their models */
+.inv-expand-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-weight: 500; color: var(--ink); text-align: left;
+}
+.inv-expand-btn:hover { color: var(--amber); }
+.inv-chevron { display: inline-block; width: 14px; color: var(--ink-faint); transition: transform 0.15s ease; }
+.inv-expand-btn.open .inv-chevron { transform: rotate(90deg); color: var(--amber); }
+.inv-model-count {
+  font-size: 0.72rem; font-weight: 600; color: var(--ink-muted);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 8px;
+}
+.comparison-table tr.inv-sub-row[hidden] { display: none; }
+.comparison-table tr.inv-sub-row td { background: var(--surface-2); font-size: 0.88rem; color: var(--ink-muted); }
+.comparison-table tr.inv-sub-row td:first-child { font-weight: 500; }
+.inv-sub-label { display: inline-block; padding-left: 22px; position: relative; }
+.inv-sub-label::before { content: "↳"; position: absolute; left: 4px; color: var(--ink-faint); }
 .empty-cell { text-align: center !important; color: var(--ink-faint); padding: 22px 0 !important; }
 
 /* ==========================================================================

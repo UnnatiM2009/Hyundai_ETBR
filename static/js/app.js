@@ -62,6 +62,9 @@ const BREAKDOWN_COLUMNS = {
   ],
   conversion: [
     { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "test_drives", label: "Test Drives", fmt: (v) => fmtInt(v) },
+    { key: "bookings", label: "Bookings", fmt: (v) => fmtInt(v) },
+    { key: "retail", label: "Retails", fmt: (v) => fmtInt(v) },
     { key: "e2t", label: "E2T %", fmt: (v) => fmtPct(v) },
     { key: "e2b", label: "E2B %", fmt: (v) => fmtPct(v) },
     { key: "e2r", label: "E2R %", fmt: (v) => fmtPct(v) },
@@ -1166,12 +1169,49 @@ function renderInventoryBreakdownTable(data, activeDim) {
     body.innerHTML = `<tr><td colspan="${INV_BREAKDOWN_COLUMNS.length + 1}" class="empty-cell">No stock matches this selection.</td></tr>`;
     return;
   }
+
+  // By Color: every colour row has a dropdown that lists the models in that colour.
+  if (activeDim === "color") {
+    body.innerHTML = rows.map((r, i) => {
+      const models = r.models || [];
+      const parentRow = `
+        <tr class="inv-color-row" data-color-idx="${i}">
+          <td>
+            <button type="button" class="inv-expand-btn" aria-expanded="false" data-color-idx="${i}"
+                    title="Show models in this colour">
+              <span class="inv-chevron" aria-hidden="true">▸</span>
+              <span>${esc(r.label)}</span>
+              <span class="inv-model-count">${models.length} model${models.length === 1 ? "" : "s"}</span>
+            </button>
+          </td>
+          ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
+        </tr>`;
+      const modelRows = models.map(m => `
+        <tr class="inv-sub-row" data-parent-idx="${i}" hidden>
+          <td><span class="inv-sub-label">${esc(m.label)}</span></td>
+          ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(m[c.key])}</td>`).join("")}
+        </tr>`).join("");
+      return parentRow + modelRows;
+    }).join("");
+    return;
+  }
+
   body.innerHTML = rows.map(r => `
     <tr>
       <td>${esc(r.label)}</td>
       ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
     </tr>
   `).join("");
+}
+
+/* Expand / collapse the model list under a colour row (By Color tab). */
+function toggleInventoryColorRow(btn) {
+  const idx = btn.dataset.colorIdx;
+  const open = btn.getAttribute("aria-expanded") !== "true";
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.classList.toggle("open", open);
+  document.querySelectorAll(`#invBreakdownBody tr.inv-sub-row[data-parent-idx="${idx}"]`)
+    .forEach(tr => { tr.hidden = !open; });
 }
 
 async function loadVehicleStock() {
@@ -1471,6 +1511,12 @@ async function boot() {
     document.querySelectorAll("#invBreakdownTabs .tab-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     if (state.inventoryBreakdownCache) renderInventoryBreakdownTable(state.inventoryBreakdownCache, btn.dataset.dim);
+  });
+
+  // Vehicle Stock > By Color: click a colour to open / close its model list
+  document.getElementById("invBreakdownBody").addEventListener("click", (e) => {
+    const btn = e.target.closest(".inv-expand-btn");
+    if (btn) toggleInventoryColorRow(btn);
   });
 
   // Model / Consultant / Source tabs under each page's breakdown table
