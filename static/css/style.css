@@ -166,6 +166,11 @@ canvas { max-width: 100%; }
 }
 .ghost-btn:hover { background: rgba(255,255,255,0.09); }
 
+/* Refresh + Logout sit side by side in the sidebar footer */
+.sidebar-btn-row { display: flex; gap: 10px; }
+.sidebar-btn-row .ghost-btn { flex: 1 1 0; min-width: 0; }
+.ghost-btn.logout-btn:hover { background: rgba(198,64,63,0.22); border-color: var(--red); color: #fff; }
+
 .sync-line {
   display: flex;
   align-items: center;
@@ -509,6 +514,9 @@ input[type="date"].filter-select { min-height: 38px; }
   border-bottom: 1px solid var(--border);
   font-size: 0.88rem;
 }
+.upload-sheets { margin: 0 0 10px; padding-left: 20px; font-size: 0.88rem; color: var(--ink-muted); line-height: 1.55; }
+.upload-sheets strong { color: var(--ink); }
+.upload-note { font-size: 0.8rem; color: var(--ink-faint); margin-bottom: 4px; }
 .upload-row input { font-size: 0.8rem; max-width: 170px; color: var(--ink-muted); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .primary-btn {
@@ -606,3 +614,18 @@ input[type="date"].filter-select { min-height: 38px; }
 }
 
 .muted-sm { font-size: 0.74rem; color: var(--ink-faint); }
+
+/* ==========================================================================
+   Sortable table headers (click = ascending, click again = descending)
+   ========================================================================== */
+.comparison-table th.sortable { cursor: pointer; user-select: none; }
+.comparison-table th.sortable:hover { color: var(--ink); }
+.comparison-table th.sortable:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+.comparison-table th.sortable::after {
+  content: "↕"; display: inline-block; margin-left: 6px;
+  font-size: 0.85em; opacity: 0.35;
+}
+.comparison-table th.sortable[aria-sort="ascending"]::after { content: "▲"; opacity: 1; color: var(--amber); }
+.comparison-table th.sortable[aria-sort="descending"]::after { content: "▼"; opacity: 1; color: var(--amber); }
+.comparison-table th.sortable[aria-sort="ascending"],
+.comparison-table th.sortable[aria-sort="descending"] { color: var(--ink); }

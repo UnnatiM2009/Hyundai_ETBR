@@ -1379,9 +1379,9 @@ function initUploadModal() {
     const msg = document.getElementById("uploadMsg");
     const submitBtn = document.getElementById("submitUpload");
 
-    const hasFile = ["enquiry", "stock"].some(k => data.get(k) && data.get(k).size > 0);
+    const hasFile = data.get("enquiry") && data.get("enquiry").size > 0;
     if (!hasFile) {
-      msg.textContent = "Choose at least one file to upload.";
+      msg.textContent = "Choose the Enquiry Excel file to upload.";
       msg.className = "modal-msg err";
       return;
     }
@@ -1437,6 +1437,11 @@ async function boot() {
     await loadMeta();
     await reloadAllLoadedSections();
     dot.classList.remove("stale");
+  });
+
+  // Logout: /logout clears the browser's saved login (press Cancel if a sign-in box appears)
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    window.location.href = "/logout";
   });
 
   // Every page's own Month / Model / Consultant / Source filter bar
@@ -1538,3 +1543,193 @@ async function boot() {
 }
 
 document.addEventListener("DOMContentLoaded", boot);
+
+/* ---------------------------------------------------------------------- */
+/* Sortable tables — click any column header to sort ascending, click      */
+/* again for descending. Applies to EVERY table in the dashboard, including */
+/* tables that are re-rendered by filters (the chosen sort is re-applied   */
+/* after each refresh). Numbers (₹ / % / days), dates and text are all     */
+/* detected automatically per column; empty cells ("—") always sort last.  */
+/* Expandable groups (Vehicle Stock > By Color) keep their model rows      */
+/* attached to their colour row, and the model rows are sorted within it.  */
+/* ---------------------------------------------------------------------- */
+(function initSortableTables() {
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+  const cellText = (cell) => {
+    if (!cell) return "";
+    if (cell.dataset && cell.dataset.sort !== undefined) return cell.dataset.sort;
+    return cell.textContent.replace(/\s+/g, " ").trim();
+  };
+  const isBlank = (t) => t === "" || /^[—–-]+$/.test(t);
+
+  function parseNumber(t) {
+    const s = t.replace(/[₹$%,▲▼•\s]/g, "").replace(/(days?|yrs?|years?|hrs?)$/i, "");
+    return /^[-+]?\d*\.?\d+$/.test(s) ? parseFloat(s) : null;
+  }
+
+  function parseDate(t) {
+    let m;
+    if ((m = t.match(/^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?,?\s+(\d{4})(?:[,\s]+(\d{1,2}):(\d{2}))?$/))) {
+      const mon = MONTHS[m[2].toLowerCase()];
+      if (mon !== undefined) return Date.UTC(+m[3], mon, +m[1], +(m[4] || 0), +(m[5] || 0));
+    }
+    if ((m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2}))?/))) {
+      return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+    }
+    if ((m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/))) {          // dd-mm-yyyy
+      return Date.UTC(+m[3], +m[2] - 1, +m[1]);
+    }
+    if ((m = t.match(/^([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4})$/))) {              // Sep 2026
+      const mon = MONTHS[m[1].toLowerCase()];
+      if (mon !== undefined) return Date.UTC(+m[2], mon, 1);
+    }
+    return null;
+  }
+
+  /* Decide column type from all of its values, then build comparable keys. */
+  function columnKeys(texts) {
+    const filled = texts.filter(t => !isBlank(t));
+    const nums = filled.filter(t => parseNumber(t) !== null).length;
+    if (filled.length && nums > 0 && nums / filled.length >= 0.5) {
+      return { type: "num", keys: texts.map(t => (isBlank(t) ? null : parseNumber(t))) };
+    }
+    const dates = filled.filter(t => parseDate(t) !== null).length;
+    if (filled.length && dates / filled.length >= 0.5) {
+      return { type: "date", keys: texts.map(t => (isBlank(t) ? null : parseDate(t))) };
+    }
+    return { type: "text", keys: texts.map(t => (isBlank(t) ? null : t)) };
+  }
+
+  const compareKeys = (type, a, b, dir) => {
+    if (a === null && b === null) return 0;
+    if (a === null) return 1;             // blanks always last, whatever the direction
+    if (b === null) return -1;
+    const r = type === "text" ? collator.compare(a, b) : a - b;
+    return dir === "asc" ? r : -r;
+  };
+
+  /* Split tbody rows into groups: a normal row + any rows that belong under it. */
+  function buildGroups(tbody) {
+    const groups = [];
+    for (const row of Array.from(tbody.rows)) {
+      const isChild = row.classList.contains("inv-sub-row") || row.hasAttribute("data-parent-idx");
+      if (isChild && groups.length) groups[groups.length - 1].children.push(row);
+      else groups.push({ row, children: [] });
+    }
+    return groups;
+  }
+
+  const headSignature = (table) => {
+    const ths = table.tHead ? Array.from(table.tHead.rows[table.tHead.rows.length - 1]?.cells || []) : [];
+    return `${ths.length}|${ths[0] ? ths[0].textContent.trim() : ""}`;
+  };
+
+  function sortBody(tbody, colIdx, dir) {
+    if (!tbody.rows.length || tbody.querySelector(".empty-cell")) return false;
+    const groups = buildGroups(tbody);
+
+    const parents = columnKeys(groups.map(g => cellText(g.row.cells[colIdx])));
+    groups.forEach((g, i) => { g.key = parents.keys[i]; });
+    groups.sort((a, b) => compareKeys(parents.type, a.key, b.key, dir));
+
+    const frag = document.createDocumentFragment();
+    for (const g of groups) {
+      frag.appendChild(g.row);
+      if (g.children.length) {
+        const kids = columnKeys(g.children.map(r => cellText(r.cells[colIdx])));
+        const order = g.children.map((r, i) => ({ r, k: kids.keys[i] }));
+        order.sort((a, b) => compareKeys(kids.type, a.k, b.k, dir));
+        order.forEach(o => frag.appendChild(o.r));
+      }
+    }
+    tbody.appendChild(frag);
+    return true;
+  }
+
+  function paintHeaders(table, colIdx, dir) {
+    if (!table.tHead) return;
+    const headRow = table.tHead.rows[table.tHead.rows.length - 1];
+    if (!headRow) return;
+    Array.from(headRow.cells).forEach((th, i) => {
+      th.classList.add("sortable");
+      th.setAttribute("tabindex", "0");
+      th.setAttribute("title", "Click to sort ascending / descending");
+      th.setAttribute("aria-sort",
+        i === colIdx ? (dir === "asc" ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function applySort(table) {
+    const st = table._sort;
+    if (!st) return;
+    Array.from(table.tBodies).forEach(tb => sortBody(tb, st.idx, st.dir));
+  }
+
+  /* Re-decorate headers and re-apply the current sort after a table is (re)rendered. */
+  function processTable(table) {
+    if (!table.tHead || !table.tHead.rows.length) return;
+    const sig = headSignature(table);
+    if (table._sort && table._sort.sig !== sig) table._sort = null;   // different column set -> reset
+    if (table._sort) {
+      applySort(table);
+      paintHeaders(table, table._sort.idx, table._sort.dir);
+    } else {
+      paintHeaders(table, -1, "asc");
+    }
+  }
+
+  function handleSortClick(th) {
+    const table = th.closest("table");
+    if (!table || table.hasAttribute("data-nosort")) return;
+    const idx = th.cellIndex;
+    const prev = table._sort;
+    const dir = prev && prev.idx === idx && prev.dir === "asc" ? "desc" : "asc";
+    table._sort = { idx, dir, sig: headSignature(table) };
+    applySort(table);
+    paintHeaders(table, idx, dir);
+    observer.takeRecords();               // ignore the DOM moves we just made
+  }
+
+  document.addEventListener("click", (e) => {
+    const th = e.target.closest("table thead th");
+    if (th) handleSortClick(th);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const th = e.target.closest && e.target.closest("table thead th.sortable");
+    if (th) { e.preventDefault(); handleSortClick(th); }
+  });
+
+  /* Watch for tables being (re)rendered by the dashboard's own code. */
+  let queued = new Set();
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    const tables = Array.from(queued);
+    queued = new Set();
+    tables.forEach(processTable);
+    observer.takeRecords();
+  };
+  const observer = new MutationObserver((records) => {
+    for (const rec of records) {
+      const host = rec.target.nodeType === 1 ? rec.target : rec.target.parentElement;
+      const own = host && host.closest ? host.closest("table") : null;
+      if (own) queued.add(own);
+      rec.addedNodes.forEach(n => {
+        if (n.nodeType !== 1) return;
+        if (n.tagName === "TABLE") queued.add(n);
+        else if (n.querySelectorAll) n.querySelectorAll("table").forEach(t => queued.add(t));
+      });
+    }
+    if (queued.size && !scheduled) { scheduled = true; requestAnimationFrame(flush); }
+  });
+
+  const start = () => {
+    document.querySelectorAll("table").forEach(processTable);
+    observer.observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+})();

@@ -44,7 +44,10 @@
 
     <div class="sidebar-footer">
       <button id="uploadBtn" class="ghost-btn">Update monthly data</button>
-      <button id="refreshBtn" class="ghost-btn">Refresh</button>
+      <div class="sidebar-btn-row">
+        <button id="refreshBtn" class="ghost-btn">Refresh</button>
+        <button id="logoutBtn" class="ghost-btn logout-btn" title="Log out of the dashboard">Logout</button>
+      </div>
 
       <div class="sync-line">
         <span class="dot" id="syncDot"></span>
@@ -938,15 +941,17 @@
 <div class="modal-backdrop" id="uploadModal">
   <div class="modal">
     <h3>Update monthly data</h3>
-    <p>Upload the workbook with the Enquiry, Physical Stock and In Transit sheets. Booking and Retail are read from the Enquiry Status column; stock is read from the two stock sheets. Everything recalculates immediately, and the current vs. previous month comparison updates automatically.</p>
+    <p>Upload <strong>one Excel file</strong> (.xlsx) &mdash; the Enquiry workbook. It must contain these 3 sheets:</p>
+    <ul class="upload-sheets">
+      <li><strong>Enquiry</strong> &mdash; all enquiries (Booking and Retail are read from the Enquiry Status column)</li>
+      <li><strong>Physical Stock</strong> &mdash; vehicles physically in stock</li>
+      <li><strong>In Transit</strong> &mdash; vehicles despatched but not yet received</li>
+    </ul>
+    <p class="upload-note">Keep the sheet names and column headings the same every month. Everything recalculates immediately and Month Comparison updates automatically. If the file is wrong, your current data is kept.</p>
     <form id="uploadForm">
       <label class="upload-row">
-        <span>Workbook: Enquiry + Physical Stock + In Transit sheets</span>
+        <span>Enquiry workbook (.xlsx)</span>
         <input type="file" name="enquiry" accept=".xlsx,.xlsm">
-      </label>
-      <label class="upload-row">
-        <span>Stock.xlsx (only if stock is a separate file)</span>
-        <input type="file" name="stock" accept=".xlsx,.xlsm">
       </label>
       <div class="modal-actions">
         <button type="button" class="ghost-btn" id="cancelUpload">Cancel</button>
