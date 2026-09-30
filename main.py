@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import data_processor as dp
@@ -60,6 +60,9 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
         if request.url.path == "/api/health":
             return await call_next(request)  # always open, for uptime/health checks
+
+        if request.url.path == "/logout":
+            return await call_next(request)  # handled by the /logout route below
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Basic "):
@@ -369,6 +372,52 @@ async def api_upload(
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# Logout
+#
+# The site is protected with browser (HTTP Basic) authentication, and a browser
+# keeps those credentials until it is told they are no longer valid. Replying
+# 401 + WWW-Authenticate makes it discard the saved login - so the next visit to
+# the dashboard asks for the username and password again. (If the login prompt
+# pops up on this page, just press Cancel.) With no login configured (local use)
+# there is nothing to log out of, and a short notice is shown instead.
+# --------------------------------------------------------------------------- #
+
+_LOGOUT_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#F3F5F8; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#12162B; }}
+  .card {{ background:#fff; border-radius:14px; padding:34px 38px; max-width:420px; text-align:center;
+          box-shadow:0 6px 24px rgba(15,19,38,.10); }}
+  h1 {{ font-size:1.35rem; margin:0 0 8px; }}
+  p {{ color:#5B6178; line-height:1.5; margin:0 0 22px; font-size:.95rem; }}
+  a {{ display:inline-block; background:#DD7B2E; color:#fff; text-decoration:none; font-weight:600;
+      padding:10px 22px; border-radius:8px; }}
+</style></head>
+<body><div class="card"><h1>{heading}</h1><p>{message}</p><a href="/">{button}</a></div></body></html>"""
+
+
+@app.get("/logout")
+def logout():
+    no_cache = {"Cache-Control": "no-store"}
+    if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
+        return HTMLResponse(_LOGOUT_PAGE.format(
+            title="Logout", heading="No login is set up",
+            message="This dashboard is running without a username and password, so there is nothing to log out of.",
+            button="Back to dashboard"), headers=no_cache)
+    return HTMLResponse(
+        _LOGOUT_PAGE.format(
+            title="Logged out", heading="You have been logged out",
+            message="Your login has been cleared from this browser. Press Cancel if a sign-in box appears. "
+                    "To use the dashboard again you will be asked for your username and password.",
+            button="Sign in again"),
+        status_code=401,
+        headers={**no_cache, "WWW-Authenticate": 'Basic realm="Hyundai ETBR Analysis"'},
+    )
 
 
 # --------------------------------------------------------------------------- #
