@@ -930,6 +930,7 @@ def _breakdown_rows_conversion(enq, book, retail, dimension, limit):
         s_cnt = int((retail[col] == k).sum()) if not retail.empty else 0
         rows.append({
             "label": k, "enquiries": e_cnt,
+            "test_drives": td_cnt, "bookings": b_cnt, "retail": s_cnt,
             "e2t": _safe_div(td_cnt, e_cnt),
             "e2b": _safe_div(b_cnt, e_cnt),
             "e2r": _safe_div(s_cnt, e_cnt),
@@ -1333,7 +1334,19 @@ def compute_vehicle_stock_breakdown(model: Optional[str] = None, stage: Optional
         return result
 
     for dim_key, col in (("by_model", "Model"), ("by_variant", "Variant"), ("by_color", "Color")):
-        rows = [_vehicle_stock_group_row(k, sub) for k, sub in df.groupby(col) if k]
+        rows = []
+        for k, sub in df.groupby(col):
+            if not k:
+                continue
+            row = _vehicle_stock_group_row(k, sub)
+            if dim_key == "by_color":
+                # Dropdown detail: which models make up this colour, with the same
+                # Physical / Transit / Age / Value / Basic Price figures.
+                models = [_vehicle_stock_group_row(m, msub)
+                          for m, msub in sub.groupby("Model") if m]
+                models.sort(key=lambda r: r["total"], reverse=True)
+                row["models"] = models
+            rows.append(row)
         rows.sort(key=lambda r: r["total"], reverse=True)
         result[dim_key] = rows[:limit]
 
