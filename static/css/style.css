@@ -10,11 +10,12 @@
   --ink-muted: #5B6178;
   --ink-faint: #8A90A6;
 
-  --sidebar-bg: #0F1326;
-  --sidebar-bg-2: #171B34;
-  --sidebar-ink: #E9EBF7;
-  --sidebar-muted: #8B90AC;
-  --sidebar-border: #262B49;
+  /* Side panel: official Hyundai dealership signage blue, Pantone 288 C (#002C5F) */
+  --sidebar-bg: #002C5F;
+  --sidebar-bg-2: #00244D;
+  --sidebar-ink: #FFFFFF;
+  --sidebar-muted: #A9BDDB;
+  --sidebar-border: #1D4A82;
 
   --blue: #2451B3;
   --blue-soft: #E7EDFB;
