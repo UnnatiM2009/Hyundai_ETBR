@@ -15,7 +15,7 @@ import os
 import base64
 import secrets
 import shutil
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -137,6 +137,30 @@ def api_breakdown(
         raise HTTPException(400, f"Unknown section '{section}'")
     return dp.compute_breakdown_tables(section, _period_param(period), model=model, consultant=consultant,
                                        source=source, age=age)
+
+
+@app.get("/api/model-variants")
+def api_model_variants(
+    model: str = Query(...),
+    period: Optional[str] = Query(default="current_month"),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    age: Optional[str] = Query(default=None),
+    variant: Optional[List[str]] = Query(default=None),
+    ages: Optional[List[str]] = Query(default=None),
+    dim: Optional[str] = Query(default="model"),
+    model_filter: Optional[str] = Query(default=None),
+):
+    """Variant-wise detail window on the Overview page.
+    dim=model (default): `model` is the clicked model.
+    dim=consultant / dim=source: `model` carries the clicked consultant / source name."""
+    if not model or model == "all":
+        raise HTTPException(400, "A specific value is required")
+    if dim not in ("model", "consultant", "source"):
+        raise HTTPException(400, "dim must be model, consultant or source")
+    return dp.compute_model_variant_detail(model, _period_param(period), consultant=consultant, source=source,
+                                           age=age, variants=variant, ages=ages,
+                                           dim=dim, model_filter=model_filter)
 
 
 @app.get("/api/test-drive")
@@ -371,7 +395,7 @@ async def api_upload(
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "build": "V4"}
 
 
 # --------------------------------------------------------------------------- #
@@ -424,12 +448,21 @@ def logout():
 # Frontend (static files)
 # --------------------------------------------------------------------------- #
 
-app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+class _NoCacheStatic(StaticFiles):
+    """Always revalidate the dashboard's own JS/CSS so an updated file is picked up on the next
+    page load (browsers otherwise keep serving a stale app.js after an upgrade)."""
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+
+app.mount("/assets", _NoCacheStatic(directory=STATIC_DIR), name="assets")
 
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"), headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.exception_handler(404)

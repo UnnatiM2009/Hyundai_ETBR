@@ -830,6 +830,7 @@ def _breakdown_rows_overview(enq, book, retail, dimension, limit):
         rows.append({
             "label": k,
             "enquiries": int((enq[col] == k).sum()) if not enq.empty else 0,
+            "test_drives": int(((enq[col] == k) & (enq["Test Drive"] == "Y")).sum()) if not enq.empty else 0,
             "bookings": int((book[col] == k).sum()) if not book.empty else 0,
             "retail": int((retail[col] == k).sum()) if not retail.empty else 0,
         })
@@ -970,6 +971,169 @@ def compute_breakdown_tables(section: str, period: Optional[str], model: Optiona
             rows = []
         result[f"by_{dimension}"] = rows
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Model window: variant-wise detail for ONE model (opened from the Overview
+# page's Breakdown / Conversion tables).  Uses exactly the same views and
+# definitions as the rest of the dashboard (enquiry / booked / retail, each
+# counted in its own month), so the numbers always agree with the tables.
+# --------------------------------------------------------------------------- #
+
+VARIANT_BLANK = "Not specified"
+
+
+def _with_variant(df: pd.DataFrame, multi_model: bool = False) -> pd.DataFrame:
+    if df.empty:
+        return df
+    d = df.copy()
+    d["_variant"] = d["Variant"].map(_text).replace("", VARIANT_BLANK)
+    if multi_model:
+        # Consultant / Source windows span several models, so a blank variant is
+        # labelled with its model to keep the rows apart.
+        blank = d["_variant"] == VARIANT_BLANK
+        d.loc[blank, "_variant"] = VARIANT_BLANK + " (" + d.loc[blank, "Model"].map(_text) + ")"
+    return d
+
+
+def _pick_ages(df: pd.DataFrame, ages) -> pd.DataFrame:
+    """Keep rows falling in ANY of the chosen enquiry-age buckets."""
+    valid = [a for a in (ages or []) if a in {b[0] for b in AGE_BUCKETS}]
+    if df.empty or not valid:
+        return df
+    mask = pd.Series(False, index=df.index)
+    for a in valid:
+        mask |= _age_mask(df, a)
+    return df[mask]
+
+
+def _pick_variants(df: pd.DataFrame, variants) -> pd.DataFrame:
+    if df.empty or not variants:
+        return df
+    return df[df["_variant"].isin(list(variants))]
+
+
+def compute_model_variant_detail(model: str, period: Optional[str], consultant: Optional[str] = None,
+                                 source: Optional[str] = None, age: Optional[str] = None,
+                                 variants: Optional[list] = None, ages: Optional[list] = None,
+                                 dim: str = "model", model_filter: Optional[str] = None) -> dict:
+    """Variant-wise detail window.
+
+    dim == "model"      -> `model` is the clicked model (original behaviour).
+    dim == "consultant" -> `model` carries the clicked consultant's name.
+    dim == "source"     -> `model` carries the clicked source's name.
+    For consultant / source the page-level Model filter arrives as `model_filter`.
+    """
+    value = model
+    if dim == "consultant":
+        q_model, q_cons, q_src = model_filter, value, source
+    elif dim == "source":
+        q_model, q_cons, q_src = model_filter, consultant, value
+    else:
+        dim = "model"
+        q_model, q_cons, q_src = value, consultant, source
+    multi_model = dim != "model"
+    views = {
+        k: _with_variant(store.view(k, period, q_model, q_cons, q_src, age=age), multi_model)
+        for k in ("enquiry", "booked", "retail")
+    }
+
+    # Cross-filtering: each chart ignores its own selection so the user can keep
+    # adding / removing bars or slices; the KPIs and the table honour both.
+    enq_all = _pick_variants(_pick_ages(views["enquiry"], ages), variants)
+    book = _pick_variants(_pick_ages(views["booked"], ages), variants)
+    retail = _pick_variants(_pick_ages(views["retail"], ages), variants)
+    enq = enq_all
+
+    # ---- KPI cards ----
+    e_cnt = len(enq)
+    td_cnt = int((enq["Test Drive"] == "Y").sum()) if e_cnt else 0
+    lost = int(enq["is_lost"].sum()) if e_cnt else 0
+    b_cnt, r_cnt = len(book), len(retail)
+
+    # ---- variant table ----
+    keys = set()
+    for f in (enq, book, retail):
+        if not f.empty:
+            keys |= set(f["_variant"].unique().tolist())
+    rows = []
+    for k in keys:
+        e_sub = enq[enq["_variant"] == k] if e_cnt else enq
+        e = int(len(e_sub))
+        td = int((e_sub["Test Drive"] == "Y").sum()) if e else 0
+        b = int((book["_variant"] == k).sum()) if not book.empty else 0
+        r = int((retail["_variant"] == k).sum()) if not retail.empty else 0
+        fuels = pd.concat([f[f["_variant"] == k]["Fuel type"] for f in (enq, book, retail) if not f.empty],
+                          ignore_index=True) if keys else pd.Series(dtype=str)
+        fuels = fuels[fuels.astype(str).str.strip() != ""]
+        mods = pd.concat([f[f["_variant"] == k]["Model"] for f in (enq, book, retail) if not f.empty],
+                         ignore_index=True) if keys else pd.Series(dtype=str)
+        rows.append({
+            "variant": k, "model": str(mods.value_counts().index[0]) if len(mods) else "",
+            "fuel": fuels.value_counts().index[0] if len(fuels) else "",
+            "enquiries": e, "test_drives": td, "bookings": b, "retail": r,
+            "lost": int(e_sub["is_lost"].sum()) if e else 0,
+            "e2t": _safe_div(td, e), "e2b": _safe_div(b, e), "e2r": _safe_div(r, e),
+            "b2r": _safe_div(r, b + r),
+        })
+    rows.sort(key=lambda x: (x["enquiries"], x["bookings"], x["retail"]), reverse=True)
+
+    # ---- chart 1: variant-wise enquiries (ignores the variant selection) ----
+    v_src = _pick_ages(views["enquiry"], ages)
+    variant_chart = []
+    if not v_src.empty:
+        vc = v_src["_variant"].value_counts()
+        variant_chart = [{"label": str(i), "value": int(n)} for i, n in vc.items()]
+
+    # ---- chart 2: enquiry ageing buckets (ignores the ageing selection) ----
+    a_src = _pick_variants(views["enquiry"], variants)
+    ageing = []
+    for value, label, lo, hi in AGE_BUCKETS:
+        n = 0
+        if not a_src.empty:
+            col = a_src["enquiry aging days"]
+            n = int(((col >= lo) & (col <= hi)).sum())
+        ageing.append({"value": value, "label": label, "count": n})
+
+    # ---- Model dropdown inside the window: every model that has activity for this
+    #      consultant / source / model-page context (ignores the model selection itself) ----
+    opt = {k: store.view(k, period, None, q_cons, q_src, age=age) for k in ("enquiry", "booked", "retail")}
+    model_names = set()
+    for f in opt.values():
+        if not f.empty:
+            model_names |= set(f["Model"].dropna().unique().tolist())
+    model_options = []
+    for m in model_names:
+        if not m or str(m).lower() in ("nan", "none", "unknown"):
+            continue
+        model_options.append({
+            "label": str(m),
+            "enquiries": int((opt["enquiry"]["Model"] == m).sum()) if not opt["enquiry"].empty else 0,
+            "bookings": int((opt["booked"]["Model"] == m).sum()) if not opt["booked"].empty else 0,
+            "retail": int((opt["retail"]["Model"] == m).sum()) if not opt["retail"].empty else 0,
+        })
+    model_options.sort(key=lambda x: (x["enquiries"], x["bookings"], x["retail"]), reverse=True)
+
+    return {
+        "model": model,
+        "dim": dim,
+        "model_options": model_options,
+        "selected_model": (model if dim == "model" else (model_filter or "all")),
+        "period": period,
+        "period_label": _month_label(period) if period else "All time",
+        "selected_variants": list(variants or []),
+        "selected_ages": list(ages or []),
+        "kpis": {
+            "enquiries": e_cnt, "test_drives": td_cnt, "test_drive_rate": _safe_div(td_cnt, e_cnt),
+            "bookings": b_cnt, "retail": r_cnt, "lost": lost,
+            "e2b": _safe_div(b_cnt, e_cnt), "e2r": _safe_div(r_cnt, e_cnt),
+            "b2r": _safe_div(r_cnt, b_cnt + r_cnt), "variant_count": len(rows),
+            "top_variant": rows[0]["variant"] if rows else "",
+        },
+        "variants": rows,
+        "variant_chart": variant_chart,
+        "ageing": ageing,
+    }
 
 
 # --------------------------------------------------------------------------- #

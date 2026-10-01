@@ -62,6 +62,8 @@ def main():
     print("=" * 60)
     print("  Unnati Hyundai — Dealership Performance Dashboard")
     print(f"  Serving at: {url}")
+    print(f"  Running from folder: {os.path.dirname(os.path.abspath(__file__))}")
+    print("  Build: V4 (model / consultant / source window)")
     if not on_cloud:
         print("  Press CTRL+C to stop")
     print("=" * 60)
