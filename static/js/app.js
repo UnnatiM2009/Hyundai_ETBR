@@ -1687,7 +1687,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V6 (model · consultant · source window + Model filter)`;
+  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V7`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
