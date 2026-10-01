@@ -28,6 +28,7 @@ const PREFIX_TO_SECTION = {
 const BREAKDOWN_COLUMNS = {
   overview: [
     { key: "enquiries", label: "Enquiries", fmt: (v) => fmtInt(v) },
+    { key: "test_drives", label: "Test Drives", fmt: (v) => fmtInt(v) },
     { key: "bookings", label: "Bookings", fmt: (v) => fmtInt(v) },
     { key: "retail", label: "Retail", fmt: (v) => fmtInt(v) },
   ],
@@ -73,6 +74,9 @@ const BREAKDOWN_COLUMNS = {
 };
 
 const DIM_LABELS = { model: "Model", consultant: "Consultant", source: "Source" };
+
+/* Breakdown tables whose "By Model" rows open the Model window (variant details). */
+const MODEL_WINDOW_PREFIXES = ["ov", "conv"];
 
 /* ---------------------------------------------------------------------- */
 /* Formatting helpers                                                      */
@@ -752,8 +756,10 @@ function renderBreakdownTable(prefix, section, data, activeDim) {
     body.innerHTML = `<tr><td colspan="${cols.length + 1}" class="empty-cell">No data for this selection.</td></tr>`;
     return;
   }
+  // Overview page: a model row opens the Model window (variant details)
+  const clickable = MODEL_WINDOW_PREFIXES.includes(prefix);   // Model, Consultant and Source rows all open the window
   body.innerHTML = rows.map(r => `
-    <tr>
+    <tr${clickable ? ` class="mv-row" tabindex="0" data-mv-prefix="${prefix}" data-mv-dim="${activeDim}" data-mv-model="${esc(r.label)}" title="Click to see variant details"` : ""}>
       <td>${r.label}</td>
       ${cols.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
     </tr>
@@ -771,6 +777,351 @@ async function loadBreakdownFor(prefix, section, filters) {
   const activeBtn = document.querySelector(`[data-tabgroup="${prefix}"] .tab-btn.active`);
   renderBreakdownTable(prefix, section, data, activeBtn ? activeBtn.dataset.dim : "model");
 }
+
+/* ---------------------------------------------------------------------- */
+/* Model window — variant-wise detail for one model (Hyundai palette)       */
+/* Opened by clicking a model row in the Overview Breakdown / Conversion    */
+/* tables. Uses the page's current Month / Consultant / Source filters.     */
+/* ---------------------------------------------------------------------- */
+const HY = {
+  navy: "#002C5F", blue: "#00AAD2", mid: "#4A7BB7", sky: "#9FDCEE", sand: "#E4DCD3", orange: "#DD7B2E",
+};
+const mvState = {
+  open: false, model: "", dim: "model", prefix: "ov", filters: null, modelPick: null,
+  variants: new Set(), ages: new Set(), data: null, seq: 0,
+};
+
+const mvEl = (id) => document.getElementById(id);
+
+function mvQuery() {
+  const f = mvState.filters;
+  const p = new URLSearchParams({ model: mvState.model, period: f.month, consultant: f.consultant, source: f.source });
+  if (mvState.dim !== "model") {
+    p.set("dim", mvState.dim);
+    // Model dropdown inside the window wins; otherwise keep the page's Model filter
+    const mf = mvState.modelPick !== null ? mvState.modelPick : f.model;
+    if (mf && mf !== "all") p.set("model_filter", mf);
+  }
+  if (f.age && f.age !== "all") p.set("age", f.age);
+  mvState.variants.forEach(v => p.append("variant", v));
+  mvState.ages.forEach(a => p.append("ages", a));
+  return p.toString();
+}
+
+const MV_TAGS = { model: "MODEL WINDOW", consultant: "CONSULTANT WINDOW", source: "SOURCE WINDOW" };
+const MV_KIND = { model: "Model Group", consultant: "Consultant", source: "Source" };
+
+async function openModelWindow(prefix, model, dim = "model") {
+  mvState.prefix = prefix;
+  mvState.model = model;
+  mvState.dim = dim;
+  mvEl("mvTag").textContent = MV_TAGS[dim] || MV_TAGS.model;
+  mvState.filters = readFilterBar(prefix);
+  mvState.modelPick = null;
+  mvEl("mvModelSelect").innerHTML = "";
+  mvState.variants = new Set();
+  mvState.ages = new Set();
+  mvState.data = null;
+  mvEl("mvTitle").textContent = model;
+  mvEl("mvSub").textContent = "Loading variant details…";
+  mvEl("mvKpis").innerHTML = "";
+  mvEl("mvTableHead").innerHTML = "";
+  mvEl("mvTableBody").innerHTML = "";
+  mvEl("mvTableFoot").innerHTML = "";
+  mvEl("mvFilterNote").hidden = true;
+  const modal = mvEl("mvModal");
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  mvState.open = true;
+  mvEl("mvClose").focus();
+  await refreshModelWindow();
+}
+
+function closeModelWindow() {
+  const modal = mvEl("mvModal");
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+  mvState.open = false;
+  destroyChart("mvVariantChart");
+  destroyChart("mvAgeChart");
+}
+
+async function refreshModelWindow() {
+  const seq = ++mvState.seq;
+  try {
+    const data = await getJSON(`/api/model-variants?${mvQuery()}`);
+    if (seq !== mvState.seq || !mvState.open) return;     // a newer click superseded this one
+    mvState.data = data;
+    renderModelWindow(data);
+  } catch (err) {
+    if (seq !== mvState.seq) return;
+    mvEl("mvSub").textContent = "Could not load variant details. Please try again.";
+  }
+}
+
+function toggleInSet(set, value) {
+  if (set.has(value)) set.delete(value); else set.add(value);
+}
+
+function renderModelWindow(d) {
+  const k = d.kpis;
+  const f = mvState.filters;
+  const filterBits = [];
+  if (mvState.dim !== "model" && d.selected_model && d.selected_model !== "all") filterBits.push(d.selected_model);
+  if (mvState.dim !== "consultant" && f.consultant && f.consultant !== "all") filterBits.push(f.consultant);
+  if (mvState.dim !== "source" && f.source && f.source !== "all") filterBits.push(f.source);
+  mvEl("mvSub").textContent =
+    `${MV_KIND[mvState.dim] || "Model Group"} · ${d.period_label} · ${fmtInt(k.variant_count)} variant(s) · ${fmtInt(k.enquiries)} enquiries` +
+    (filterBits.length ? ` · ${filterBits.join(" · ")}` : "");
+
+  const cards = [
+    { label: "Total enquiries", value: fmtInt(k.enquiries), color: HY.navy,
+      sub: k.top_variant ? `Top variant: ${esc(k.top_variant)}` : "No variants" },
+    { label: "Test drives", value: fmtInt(k.test_drives), color: HY.blue,
+      sub: `${fmtPct(k.test_drive_rate)} of enquiries` },
+    { label: "Bookings", value: fmtInt(k.bookings), color: HY.mid,
+      sub: `Enquiry → Booking ${fmtPct(k.e2b)}` },
+    { label: "Retails", value: fmtInt(k.retail), color: HY.orange,
+      sub: `Enquiry → Retail ${fmtPct(k.e2r)} · B2R ${fmtPct(k.b2r)}` },
+  ];
+  mvEl("mvKpis").innerHTML = cards.map(c => `
+    <div class="mv-kpi" style="--k:${c.color}">
+      <div class="mv-kpi-label">${c.label}</div>
+      <div class="mv-kpi-value">${c.value}</div>
+      <div class="mv-kpi-sub">${c.sub}</div>
+    </div>`).join("");
+
+  renderMvModelSelect(d);
+  renderMvVariantChart(d);
+  renderMvAgeChart(d);
+  renderMvTable(d);
+
+  const note = mvEl("mvFilterNote");
+  const parts = [];
+  if (mvState.variants.size) parts.push(`${mvState.variants.size} variant(s)`);
+  if (mvState.ages.size) {
+    const labels = d.ageing.filter(a => mvState.ages.has(a.value)).map(a => a.label);
+    parts.push(`age: ${labels.join(", ")}`);
+  }
+  note.hidden = parts.length === 0;
+  mvEl("mvFilterText").textContent = parts.length ? `Filtered by ${parts.join(" · ")}` : "";
+}
+
+/* Model dropdown: "All models" (consultant / source windows only) + every model with activity. */
+function renderMvModelSelect(d) {
+  const sel = mvEl("mvModelSelect");
+  const opts = d.model_options || [];
+  const html = [];
+  if (mvState.dim !== "model") html.push(`<option value="all">All models</option>`);
+  opts.forEach(o => html.push(
+    `<option value="${esc(o.label)}">${esc(o.label)} — ${fmtInt(o.enquiries)} enq · ${fmtInt(o.bookings)} bkg · ${fmtInt(o.retail)} retail</option>`));
+  sel.innerHTML = html.join("");
+  const want = d.selected_model || "all";
+  sel.value = Array.from(sel.options).some(o => o.value === want) ? want : (sel.options[0]?.value ?? "");
+  mvEl("mvToolbarHint").textContent = mvState.dim === "model"
+    ? "Switch to another model to see its variant details"
+    : `Pick a model to see ${mvState.model}'s model-wise variant details`;
+}
+
+function onMvModelChange() {
+  const v = mvEl("mvModelSelect").value;
+  mvState.variants = new Set();           // variants belong to a model - start fresh
+  mvState.ages = new Set();
+  if (mvState.dim === "model") {
+    mvState.model = v;
+    mvEl("mvTitle").textContent = v;
+  } else {
+    mvState.modelPick = v;
+  }
+  refreshModelWindow();
+}
+
+function renderMvVariantChart(d) {
+  const items = d.variant_chart || [];
+  const labels = items.map(i => i.label);
+  const values = items.map(i => i.value);
+  const sel = mvState.variants;
+  const colors = labels.map(l => (!sel.size || sel.has(l)) ? HY.navy : "rgba(0,44,95,0.22)");
+  const box = mvEl("mvBarBox");
+  box.style.height = `${Math.max(200, items.length * 30 + 40)}px`;
+  destroyChart("mvVariantChart");
+  if (!items.length) { return; }
+  const ctx = mvEl("mvVariantChart").getContext("2d");
+  state.charts["mvVariantChart"] = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4, maxBarThickness: 20 }] },
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false,
+      animation: { duration: 250 },
+      layout: { padding: { right: 30 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { title: (it) => it[0].label, label: (it) => ` ${it.raw} enquiries` } },
+      },
+      onClick: (evt, els) => {
+        if (!els.length) return;
+        toggleInSet(mvState.variants, labels[els[0].index]);
+        refreshModelWindow();
+      },
+      onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      scales: {
+        x: { beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } },
+        y: {
+          grid: { display: false },
+          ticks: {
+            color: baseInkColor(), autoSkip: false, font: { size: 11 },
+            callback: function (v) { const t = this.getLabelForValue(v); return t.length > 30 ? t.slice(0, 29) + "…" : t; },
+          },
+        },
+      },
+    },
+    plugins: [{
+      id: "mvBarValues",
+      afterDatasetsDraw(chart) {
+        const { ctx: c } = chart;
+        c.save(); c.font = "700 11px Inter, sans-serif"; c.fillStyle = HY.navy; c.textBaseline = "middle";
+        chart.getDatasetMeta(0).data.forEach((bar, i) => {
+          c.fillStyle = cssVar("--ink");
+          c.fillText(String(values[i]), bar.x + 6, bar.y);
+        });
+        c.restore();
+      },
+    }],
+  });
+}
+
+function renderMvAgeChart(d) {
+  const buckets = d.ageing || [];
+  const total = buckets.reduce((a, b) => a + b.count, 0);
+  const palette = [HY.blue, HY.mid, HY.navy, HY.orange];
+  const sel = mvState.ages;
+  const colors = buckets.map((b, i) => (!sel.size || sel.has(b.value)) ? palette[i % palette.length] : palette[i % palette.length] + "40");
+  destroyChart("mvAgeChart");
+  const ctx = mvEl("mvAgeChart").getContext("2d");
+  state.charts["mvAgeChart"] = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels: buckets.map(b => b.label), datasets: [{ data: buckets.map(b => b.count), backgroundColor: colors, borderColor: cssVar("--surface"), borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: "52%",
+      animation: { duration: 250 },
+      plugins: {
+        legend: { position: "right", labels: { color: baseInkColor(), boxWidth: 12, padding: 12 } },
+        tooltip: { callbacks: { label: (it) => ` ${it.raw} enquiries (${total ? ((it.raw / total) * 100).toFixed(0) : 0}%)` } },
+      },
+      onClick: (evt, els) => {
+        if (!els.length) return;
+        toggleInSet(mvState.ages, buckets[els[0].index].value);
+        refreshModelWindow();
+      },
+      onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+    },
+    plugins: [{
+      id: "mvSliceLabels",
+      afterDatasetsDraw(chart) {
+        const { ctx: c } = chart;
+        const meta = chart.getDatasetMeta(0);
+        c.save(); c.textAlign = "center"; c.textBaseline = "middle"; c.fillStyle = "#fff";
+        meta.data.forEach((arc, i) => {
+          const n = buckets[i].count;
+          if (!n || !total) return;
+          const pct = Math.round((n / total) * 100);
+          if (pct < 5) return;
+          const pos = arc.tooltipPosition();
+          c.font = "700 12px Inter, sans-serif";
+          c.fillText(String(n), pos.x, pos.y - 7);
+          c.font = "600 11px Inter, sans-serif";
+          c.fillText(`${pct}%`, pos.x, pos.y + 8);
+        });
+        c.restore();
+      },
+    }],
+  });
+}
+
+const MV_COLS = [
+  { key: "enquiries", label: "Enquiries", fmt: fmtInt },
+  { key: "test_drives", label: "Test Drives", fmt: fmtInt },
+  { key: "bookings", label: "Bookings", fmt: fmtInt },
+  { key: "retail", label: "Retails", fmt: fmtInt },
+  { key: "e2t", label: "E2T %", fmt: fmtPct },
+  { key: "e2b", label: "E2B %", fmt: fmtPct },
+  { key: "e2r", label: "E2R %", fmt: fmtPct },
+  { key: "b2r", label: "B2R %", fmt: fmtPct },
+];
+
+function renderMvTable(d) {
+  const rows = d.variants || [];
+  mvEl("mvTableCount").textContent = `(${rows.length} variant${rows.length === 1 ? "" : "s"})`;
+  const showModel = mvState.dim !== "model";
+  mvEl("mvTableHead").innerHTML =
+    `<tr><th>Variant</th>${showModel ? "<th>Model</th>" : ""}<th>Fuel</th>${MV_COLS.map(c => `<th>${c.label}</th>`).join("")}</tr>`;
+  if (!rows.length) {
+    mvEl("mvTableBody").innerHTML = `<tr><td colspan="${MV_COLS.length + 2 + (showModel ? 1 : 0)}" class="empty-cell">No variants for this selection.</td></tr>`;
+    mvEl("mvTableFoot").innerHTML = "";
+    return;
+  }
+  mvEl("mvTableBody").innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.variant)}</td>
+      ${showModel ? `<td>${esc(r.model)}</td>` : ""}
+      <td>${r.fuel ? `<span class="mv-fuel">${esc(r.fuel)}</span>` : "—"}</td>
+      ${MV_COLS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
+    </tr>`).join("");
+  const k = d.kpis;
+  const tot = { enquiries: k.enquiries, test_drives: k.test_drives, bookings: k.bookings, retail: k.retail,
+                e2t: k.test_drive_rate, e2b: k.e2b, e2r: k.e2r, b2r: k.b2r };
+  mvEl("mvTableFoot").innerHTML =
+    `<tr><td>Total</td>${showModel ? "<td></td>" : ""}<td></td>${MV_COLS.map(c => `<td>${c.fmt(tot[c.key])}</td>`).join("")}</tr>`;
+}
+
+function exportModelWindow() {
+  const d = mvState.data;
+  if (!d) return;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lead = mvState.dim === "consultant" ? "Consultant" : mvState.dim === "source" ? "Source" : "Model";
+  const showModel = mvState.dim !== "model";
+  const header = [lead, ...(showModel ? ["Model"] : []), "Variant", "Fuel", ...MV_COLS.map(c => c.label)];
+  const lines = [header.map(q).join(",")];
+  d.variants.forEach(r => {
+    lines.push([d.model, ...(showModel ? [r.model] : []), r.variant, r.fuel, ...MV_COLS.map(c => (typeof r[c.key] === "number" ? r[c.key] : ""))].map(q).join(","));
+  });
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const picked = mvState.dim !== "model" && d.selected_model && d.selected_model !== "all" ? `_${d.selected_model}` : "";
+  const safe = (d.model + picked).replace(/[^\w\-]+/g, "_");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${safe}_variants_${d.period || "all"}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+(function initModelWindow() {
+  const wire = () => {
+    // open: click (or Enter / Space) on a model row
+    document.addEventListener("click", (e) => {
+      const row = e.target.closest("tr.mv-row");
+      if (row) openModelWindow(row.dataset.mvPrefix, row.dataset.mvModel, row.dataset.mvDim || "model");
+    });
+    document.addEventListener("keydown", (e) => {
+      if (mvState.open && e.key === "Escape") { closeModelWindow(); return; }
+      if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches("tr.mv-row")) {
+        e.preventDefault();
+        openModelWindow(e.target.dataset.mvPrefix, e.target.dataset.mvModel, e.target.dataset.mvDim || "model");
+      }
+    });
+    mvEl("mvClose").addEventListener("click", closeModelWindow);
+    mvEl("mvModal").addEventListener("click", (e) => { if (e.target === mvEl("mvModal")) closeModelWindow(); });
+    mvEl("mvExport").addEventListener("click", exportModelWindow);
+    mvEl("mvModelSelect").addEventListener("change", onMvModelChange);
+    mvEl("mvClear").addEventListener("click", () => {
+      mvState.variants = new Set(); mvState.ages = new Set(); refreshModelWindow();
+    });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
+  else wire();
+})();
 
 /* ---------------------------------------------------------------------- */
 /* Enquiry Follow-up page                                                   */
@@ -1336,7 +1687,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)}`;
+  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V6 (model · consultant · source window + Model filter)`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }

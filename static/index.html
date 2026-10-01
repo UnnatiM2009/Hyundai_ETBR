@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <script src="/assets/js/vendor/chart.umd.js"></script>
-<link rel="stylesheet" href="/assets/css/style.css">
+<link rel="stylesheet" href="/assets/css/style.css?v=6">
 </head>
 <body>
 
@@ -937,6 +937,61 @@
   </main>
 </div>
 
+<!-- ================= MODEL WINDOW (variant details) ================= -->
+<div class="mv-backdrop" id="mvModal" aria-hidden="true">
+  <div class="mv-window" role="dialog" aria-modal="true" aria-labelledby="mvTitle">
+    <div class="mv-head">
+      <div class="mv-badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15l1.6-5.2A2 2 0 0 1 6.5 8.4h11a2 2 0 0 1 1.9 1.4L21 15"/><path d="M3 15h18v3a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-1h-11v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><circle cx="7.5" cy="14.5" r=".6"/><circle cx="16.5" cy="14.5" r=".6"/></svg>
+      </div>
+      <div class="mv-head-text">
+        <div class="mv-title-row"><h2 id="mvTitle">Model</h2><span class="mv-tag" id="mvTag">MODEL WINDOW</span></div>
+        <div class="mv-sub" id="mvSub"></div>
+      </div>
+      <div class="mv-head-actions">
+        <button type="button" class="mv-export" id="mvExport">&#11015; Export</button>
+        <button type="button" class="mv-close" id="mvClose" aria-label="Close">&times;</button>
+      </div>
+    </div>
+
+    <div class="mv-body">
+      <div class="mv-toolbar">
+        <label for="mvModelSelect">Model</label>
+        <select id="mvModelSelect" class="filter-select" aria-label="Filter by model"></select>
+        <span class="mv-toolbar-hint" id="mvToolbarHint"></span>
+      </div>
+      <div class="mv-kpis" id="mvKpis"></div>
+
+      <div class="mv-charts">
+        <div class="mv-card">
+          <div class="mv-card-title">Variant wise enquiries <span>(click bars to filter, multi-select)</span></div>
+          <div class="mv-bar-scroll"><div class="mv-bar-box" id="mvBarBox"><canvas id="mvVariantChart"></canvas></div></div>
+        </div>
+        <div class="mv-card">
+          <div class="mv-card-title">Enquiry ageing <span>(click slices to filter, multi-select)</span></div>
+          <div class="mv-donut-box"><canvas id="mvAgeChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="mv-filter-note" id="mvFilterNote" hidden>
+        <span id="mvFilterText"></span>
+        <button type="button" id="mvClear">Clear filters</button>
+      </div>
+
+      <div class="mv-card mv-table-card">
+        <div class="mv-card-title">Variant details <span id="mvTableCount"></span></div>
+        <div class="table-wrap tall">
+          <table class="comparison-table mv-table" id="mvTable">
+            <thead id="mvTableHead"></thead>
+            <tbody id="mvTableBody"></tbody>
+            <tfoot id="mvTableFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ================= UPLOAD MODAL ================= -->
 <div class="modal-backdrop" id="uploadModal">
   <div class="modal">
@@ -962,6 +1017,6 @@
   </div>
 </div>
 
-<script src="/assets/js/app.js"></script>
+<script src="/assets/js/app.js?v=6"></script>
 </body>
 </html>
