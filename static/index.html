@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <script src="/assets/js/vendor/chart.umd.js"></script>
-<link rel="stylesheet" href="/assets/css/style.css?v=7">
+<link rel="stylesheet" href="/assets/css/style.css?v=11">
 </head>
 <body>
 
@@ -196,8 +196,8 @@
             <select id="enqSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
           <div class="filter-field">
-            <label for="enqAge">Enquiry aging days</label>
-            <select id="enqAge" class="filter-select"><option value="all">All enquiry ages</option></select>
+            <label for="enqAge">Enquiry date</label>
+            <select id="enqAge" class="filter-select"><option value="all">All dates</option></select>
           </div>
           <button id="enqReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
@@ -480,12 +480,12 @@
       <div class="panel filter-panel">
         <div class="filter-bar">
           <div class="filter-field">
-            <label for="fuDate">Follow-up date (today)</label>
-            <input type="date" id="fuDate" class="filter-select">
+            <label for="fuFrom">Follow-up from date</label>
+            <input type="date" id="fuFrom" class="filter-select">
           </div>
           <div class="filter-field">
-            <label for="fuMonth">Cancels in month</label>
-            <select id="fuMonth" class="filter-select"></select>
+            <label for="fuTo">Follow-up to date</label>
+            <input type="date" id="fuTo" class="filter-select">
           </div>
           <div class="filter-field">
             <label for="fuModel">Model</label>
@@ -503,6 +503,32 @@
         </div>
       </div>
       <div class="kpi-grid" id="fuKpiGrid"></div>
+
+      <!-- ---- Booked enquiries by number of follow-ups ---- -->
+      <div class="fb-section-head">
+        <h3>Booked enquiries by number of follow-ups</h3>
+        <p id="fuBookNote">Click a card for the full customer list</p>
+      </div>
+      <div class="kpi-grid fb-grid" id="fuBookKpiGrid"></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Follow-ups before booking &mdash; Model, Consultant &amp; Colour wise</h3>
+          <p>Every enquiry placed in 0 / 1 / 2 / 3 / 4+ follow-ups, so each row adds up to its total &mdash; click a row for all its enquiries, or a number for just that group</p>
+        </div>
+        <div class="tab-row" id="fuBookTabs">
+          <button class="tab-btn active" data-dim="model">Model wise</button>
+          <button class="tab-btn" data-dim="consultant">Consultant wise</button>
+          <button class="tab-btn" data-dim="color">Colour wise</button>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table fb-table" id="fuBookTable">
+            <thead id="fuBookHead"></thead>
+            <tbody id="fuBookBody"></tbody>
+            <tfoot id="fuBookFoot"></tfoot>
+          </table>
+        </div>
+      </div>
 
       <div class="panel-grid two-col">
         <div class="panel">
@@ -527,7 +553,7 @@
           <p id="fuListSub">Who to call — customers behind the numbers above</p>
         </div>
         <div class="tab-row" id="fuScopeTabs">
-          <button class="tab-btn active" data-scope="today">Due today</button>
+          <button class="tab-btn active" data-scope="today" id="fuTodayTab">Due today</button>
           <button class="tab-btn" data-scope="pending">Previous days pending</button>
           <button class="tab-btn" data-scope="upcoming">Upcoming</button>
           <button class="tab-btn" data-scope="all">All open</button>
@@ -562,7 +588,7 @@
           </div>
           <div class="table-wrap tall">
             <table class="comparison-table" id="fuConsultantTable">
-              <thead><tr><th>Consultant</th><th>Pending</th><th>Due today</th><th>Upcoming</th><th>Total</th></tr></thead>
+              <thead><tr><th>Consultant</th><th>Pending</th><th id="fuDueHead">Due today</th><th>Upcoming</th><th>Total</th></tr></thead>
               <tbody id="fuConsultantBody"></tbody>
             </table>
           </div>
@@ -572,7 +598,7 @@
       <div class="panel">
         <div class="panel-head">
           <h3>Cancelled enquiries</h3>
-          <p id="fuCancelSub">Enquiry Follow up Cancel and Appointed Enquiry Cancel for the selected month</p>
+          <p id="fuCancelSub">Enquiry Follow up Cancel and Appointed Enquiry Cancel with a lost date between the From and To dates</p>
         </div>
         <div class="tab-row" id="fuCancelTabs">
           <button class="tab-btn active" data-scope="followup_cancel">Enquiry Follow up Cancel</button>
@@ -988,6 +1014,97 @@
           </table>
         </div>
       </div>
+
+      <div class="mv-card mv-table-card mv-wait-card">
+        <div class="mv-card-title mv-wait-title">
+          <strong class="mv-wait-h">Pending for delivery <span id="mvWaitCount"></span></strong>
+          <button type="button" class="mv-mini-btn" id="mvWaitExport">&#11015; Export list</button>
+        </div>
+        <p class="mv-wait-note" id="mvWaitNote"></p>
+        <div class="table-wrap tall">
+          <table class="comparison-table mv-table" id="mvWaitTable">
+            <thead id="mvWaitHead"></thead>
+            <tbody id="mvWaitBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= BOOKED FOLLOW-UP WINDOW (full customer details, no charts) ================= -->
+<div class="mv-backdrop" id="fbModal" aria-hidden="true">
+  <div class="mv-window" role="dialog" aria-modal="true" aria-labelledby="fbTitle">
+    <div class="mv-head">
+      <div class="mv-badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>
+      </div>
+      <div class="mv-head-text">
+        <div class="mv-title-row"><h2 id="fbTitle">Booked enquiries</h2><span class="mv-tag" id="fbTag">FOLLOW-UP WINDOW</span></div>
+        <div class="mv-sub" id="fbSub"></div>
+      </div>
+      <div class="mv-head-actions">
+        <button type="button" class="mv-export" id="fbExport">&#11015; Export</button>
+        <button type="button" class="mv-close" id="fbClose" aria-label="Close">&times;</button>
+      </div>
+    </div>
+
+    <div class="mv-body">
+      <div class="mv-kpis fb-kpis" id="fbKpis"></div>
+
+      <div class="mv-filter-note" id="fbFilterNote" hidden>
+        <span id="fbFilterText"></span>
+        <button type="button" id="fbClear">Show all follow-up groups</button>
+      </div>
+
+      <div class="mv-card mv-table-card">
+        <div class="mv-card-title">Customer details <span id="fbTableCount"></span></div>
+        <div class="table-wrap tall">
+          <table class="comparison-table mv-table fb-detail-table" id="fbTable">
+            <thead id="fbTableHead"></thead>
+            <tbody id="fbTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= VEHICLE STOCK WINDOW (unit-by-unit details) ================= -->
+<div class="mv-backdrop" id="svModal" aria-hidden="true">
+  <div class="mv-window" role="dialog" aria-modal="true" aria-labelledby="svTitle">
+    <div class="mv-head">
+      <div class="mv-badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15l1.6-5.2A2 2 0 0 1 6.5 8.4h11a2 2 0 0 1 1.9 1.4L21 15"/><path d="M3 15h18v3a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-1h-11v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><circle cx="7.5" cy="14.5" r=".6"/><circle cx="16.5" cy="14.5" r=".6"/></svg>
+      </div>
+      <div class="mv-head-text">
+        <div class="mv-title-row"><h2 id="svTitle">Vehicle stock</h2><span class="mv-tag" id="svTag">STOCK WINDOW</span></div>
+        <div class="mv-sub" id="svSub"></div>
+      </div>
+      <div class="mv-head-actions">
+        <button type="button" class="mv-export" id="svExport">&#11015; Export</button>
+        <button type="button" class="mv-close" id="svClose" aria-label="Close">&times;</button>
+      </div>
+    </div>
+
+    <div class="mv-body">
+      <div class="mv-kpis fb-kpis" id="svKpis"></div>
+
+      <div class="mv-filter-note" id="svFilterNote" hidden>
+        <span id="svFilterText"></span>
+        <button type="button" id="svClear">Show all units</button>
+      </div>
+
+      <div class="mv-card mv-table-card">
+        <div class="mv-card-title">Vehicle details <span id="svTableCount"></span>
+          <span class="sv-hint">TAT = days from HMI invoice date to today &middot; click a column heading to sort</span></div>
+        <div class="table-wrap tall">
+          <table class="comparison-table mv-table fb-detail-table sv-table" id="svTable">
+            <thead id="svTableHead"></thead>
+            <tbody id="svTableBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -1017,6 +1134,6 @@
   </div>
 </div>
 
-<script src="/assets/js/app.js?v=7"></script>
+<script src="/assets/js/app.js?v=15"></script>
 </body>
 </html>

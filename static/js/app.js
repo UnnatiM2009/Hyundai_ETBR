@@ -316,22 +316,22 @@ function apiParams(f) {
   return new URLSearchParams(p).toString();
 }
 
-/* "Enquiry aging days" dropdown on the Enquiry page: buckets first, then each exact age in days. */
+/* "Enquiry date" dropdown on the Enquiry page: the dates of the SELECTED MONTH that have enquiries.
+   It is rebuilt whenever the Month changes (and falls back to "All dates" if the chosen date is not in that month).
+   The id stays "enqAge" - the value travels to the server as age=date:YYYY-MM-DD. */
 function populateAgeSelect() {
   const sel = document.getElementById("enqAge");
-  if (!sel || !state.filterOptions?.ages) return;
+  if (!sel || !state.filterOptions) return;
+  const month = document.getElementById("enqMonth")?.value || state.meta.current_period;
+  const dates = (state.filterOptions.enquiry_dates || {})[month] || [];
   const previous = sel.value;
-  const ages = state.filterOptions.ages;
   sel.innerHTML = "";
-  sel.appendChild(new Option("All enquiry ages", "all"));
-  const g1 = document.createElement("optgroup"); g1.label = "Age range";
-  ages.buckets.forEach(b => g1.appendChild(new Option(b.label, b.value)));
-  sel.appendChild(g1);
-  const g2 = document.createElement("optgroup"); g2.label = "Exact age";
-  ages.days.forEach(d => g2.appendChild(new Option(d === 1 ? "1 day" : `${d} days`, `d:${d}`)));
-  sel.appendChild(g2);
+  sel.appendChild(new Option(dates.length ? `All dates in ${monthLabelOf(month)}` : "No enquiries this month", "all"));
+  const wd = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
+  dates.forEach(iso => sel.appendChild(new Option(`${fmtIsoLong(iso)} · ${wd.format(new Date(iso + "T00:00:00"))}`, `date:${iso}`)));
   sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
 }
+const monthLabelOf = (m) => (state.meta.available_periods.find(p => p.value === m)?.label) || m;
 
 async function loadOverview() {
   await populateFilterBar("ov");
@@ -375,8 +375,7 @@ async function loadOverview() {
   doughnutChart("overviewSourceChart", sources.map(s => s.label), sources.map(s => s.value),
     [cssVar("--blue"), cssVar("--amber"), cssVar("--green"), cssVar("--purple"), cssVar("--red"), "#999"]);
 
-  await loadBreakdownFor("ov", "overview", f);
-  await loadBreakdownFor("conv", "conversion", f);
+  await Promise.all([loadBreakdownFor("ov", "overview", f), loadBreakdownFor("conv", "conversion", f)]);
 }
 
 async function loadTestDrive() {
@@ -429,7 +428,7 @@ async function loadEnquiry() {
   f.age = document.getElementById("enqAge")?.value || "all";
   const qs = apiParams(f);
   const ageOn = f.age !== "all";
-  const ageText = ageOn ? document.getElementById("enqAge").selectedOptions[0].textContent : "";
+  const ageText = ageOn ? document.getElementById("enqAge").selectedOptions[0].textContent.split(" · ")[0] : "";
 
   const [kpis, enquiry, comparison] = await Promise.all([
     getJSON(`/api/kpis?${qs}`),
@@ -440,13 +439,13 @@ async function loadEnquiry() {
 
   renderKpiGrid("enqKpiGrid", [
     { label: "Total enquiries", value: fmtInt(kpis.total_enquiries), color: "var(--blue)",
-      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Total Enquiries"]?.change_pct, cmp["Total Enquiries"]?.direction) },
+      sub: ageOn ? `enquiry date: ${ageText}` : deltaHtml(cmp["Total Enquiries"]?.change_pct, cmp["Total Enquiries"]?.direction) },
     { label: "Enquiry → booking", value: fmtPct(kpis.enquiry_to_booking_rate), color: "var(--green)",
-      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Enquiry to Booking Conv. (%)"]?.change_pct, cmp["Enquiry to Booking Conv. (%)"]?.direction) },
+      sub: ageOn ? `enquiry date: ${ageText}` : deltaHtml(cmp["Enquiry to Booking Conv. (%)"]?.change_pct, cmp["Enquiry to Booking Conv. (%)"]?.direction) },
     { label: "Appointed enquiry", value: fmtInt(kpis.appointed_enquiries), color: "var(--purple)",
-      sub: ageOn ? `enquiry age: ${ageText}` : "status = Appointed Enquiry, this selection" },
+      sub: ageOn ? `enquiry date: ${ageText}` : "status = Appointed Enquiry, this selection" },
     { label: "Lost enquiries", value: fmtInt(kpis.lost_enquiries), color: "var(--red)",
-      sub: ageOn ? `enquiry age: ${ageText}` : deltaHtml(cmp["Lost Enquiries"]?.change_pct, cmp["Lost Enquiries"]?.direction) },
+      sub: ageOn ? `enquiry date: ${ageText}` : deltaHtml(cmp["Lost Enquiries"]?.change_pct, cmp["Lost Enquiries"]?.direction) },
   ]);
 
   const status = enquiry.status_breakdown || [];
@@ -789,23 +788,29 @@ const HY = {
 const mvState = {
   open: false, model: "", dim: "model", prefix: "ov", filters: null, modelPick: null,
   variants: new Set(), ages: new Set(), data: null, seq: 0,
+  rec: null,                       // the compact record set the whole window is computed from
 };
+const mvCache = new Map();         // key -> Promise of a record set (also filled when you hover a row)
+const mvChartData = { labels: [], values: [], buckets: [], total: 0 };   // read live by the chart callbacks
 
 const mvEl = (id) => document.getElementById(id);
 
-function mvQuery() {
-  const f = mvState.filters;
-  const p = new URLSearchParams({ model: mvState.model, period: f.month, consultant: f.consultant, source: f.source });
-  if (mvState.dim !== "model") {
-    p.set("dim", mvState.dim);
-    // Model dropdown inside the window wins; otherwise keep the page's Model filter
-    const mf = mvState.modelPick !== null ? mvState.modelPick : f.model;
-    if (mf && mf !== "all") p.set("model_filter", mf);
-  }
-  if (f.age && f.age !== "all") p.set("age", f.age);
-  mvState.variants.forEach(v => p.append("variant", v));
-  mvState.ages.forEach(a => p.append("ages", a));
+/* --- records: ONE download per window (cached; also pre-loaded when you hover a row) --- */
+function mvRecordsQuery(model, dim, filters) {
+  const p = new URLSearchParams({ model, period: filters.month, consultant: filters.consultant, source: filters.source });
+  if (dim !== "model") p.set("dim", dim);
+  if (filters.age && filters.age !== "all") p.set("age", filters.age);
   return p.toString();
+}
+function mvLoadRecords(model, dim, filters) {
+  const qs = mvRecordsQuery(model, dim, filters);
+  if (!mvCache.has(qs)) {
+    const pr = getJSON(`/api/model-variants/records?${qs}`);
+    pr.catch(() => mvCache.delete(qs));          // never keep a failed download
+    mvCache.set(qs, pr);
+    if (mvCache.size > 40) mvCache.delete(mvCache.keys().next().value);
+  }
+  return mvCache.get(qs);
 }
 
 const MV_TAGS = { model: "MODEL WINDOW", consultant: "CONSULTANT WINDOW", source: "SOURCE WINDOW" };
@@ -822,12 +827,15 @@ async function openModelWindow(prefix, model, dim = "model") {
   mvState.variants = new Set();
   mvState.ages = new Set();
   mvState.data = null;
+  mvState.rec = null;
   mvEl("mvTitle").textContent = model;
   mvEl("mvSub").textContent = "Loading variant details…";
   mvEl("mvKpis").innerHTML = "";
   mvEl("mvTableHead").innerHTML = "";
   mvEl("mvTableBody").innerHTML = "";
   mvEl("mvTableFoot").innerHTML = "";
+  mvEl("mvWaitBody").innerHTML = "";
+  mvEl("mvWaitHead").innerHTML = "";
   mvEl("mvFilterNote").hidden = true;
   const modal = mvEl("mvModal");
   modal.classList.add("open");
@@ -835,7 +843,16 @@ async function openModelWindow(prefix, model, dim = "model") {
   document.body.style.overflow = "hidden";
   mvState.open = true;
   mvEl("mvClose").focus();
-  await refreshModelWindow();
+  const seq = ++mvState.seq;
+  try {
+    const rec = await mvLoadRecords(model, dim, mvState.filters);
+    if (seq !== mvState.seq || !mvState.open) return;       // closed or re-opened meanwhile
+    mvState.rec = rec;
+    refreshModelWindow();
+  } catch (err) {
+    if (seq !== mvState.seq) return;
+    mvEl("mvSub").textContent = "Could not load variant details. Please try again.";
+  }
 }
 
 function closeModelWindow() {
@@ -848,17 +865,118 @@ function closeModelWindow() {
   destroyChart("mvAgeChart");
 }
 
-async function refreshModelWindow() {
-  const seq = ++mvState.seq;
-  try {
-    const data = await getJSON(`/api/model-variants?${mvQuery()}`);
-    if (seq !== mvState.seq || !mvState.open) return;     // a newer click superseded this one
-    mvState.data = data;
-    renderModelWindow(data);
-  } catch (err) {
-    if (seq !== mvState.seq) return;
-    mvEl("mvSub").textContent = "Could not load variant details. Please try again.";
-  }
+/* Everything after the download is computed here, in the browser - no server call, so it is instant. */
+function refreshModelWindow() {
+  if (!mvState.rec) return;
+  const data = mvCompute();
+  mvState.data = data;
+  renderModelWindow(data);
+}
+
+function mvSelectedModel() {
+  if (mvState.dim === "model") return mvState.model;
+  const f = mvState.filters;
+  const m = mvState.modelPick !== null ? mvState.modelPick : f.model;
+  return m || "all";
+}
+
+const MV_HIDDEN_MODELS = new Set(["", "nan", "none", "unknown"]);
+
+/* Same rules as the server (compute_model_variant_detail): enquiries / bookings / retails each come from
+   their own view; the two charts ignore their own selection; KPIs and the table honour both. */
+function mvCompute() {
+  const R = mvState.rec, V = R.vocab;
+  const selModel = mvSelectedModel();
+  const modelOk = (r) => selModel === "all" || V.models[r[1]] === selModel;
+  const buckets = R.age_buckets;
+  const agesSel = buckets.filter(b => mvState.ages.has(b[0]));
+  const ageOk = (r) => !agesSel.length || agesSel.some(b => r[3] >= b[2] && r[3] <= b[3]);
+  const vIdx = new Set();
+  if (mvState.variants.size) V.variants.forEach((v, i) => { if (mvState.variants.has(v)) vIdx.add(i); });
+  const varOk = (r) => !vIdx.size || vIdx.has(r[0]);
+  // Same rounding as the server's Python round(x, 1): exact ties (e.g. 6.25) go to the even digit (6.2),
+  // so the window always shows the very same percentages as the Conversion rates table.
+  const r1 = (x) => {
+    const q = x * 4;
+    if (Number.isInteger(q) && q % 2 !== 0) { const f = Math.floor(x * 10); return (f % 2 === 0 ? f : f + 1) / 10; }
+    return Number(x.toFixed(1));
+  };
+  const pct = (n, d) => (d ? r1((n / d) * 100) : 0);
+
+  const enqBase = R.enq.filter(modelOk), bookBase = R.book.filter(modelOk), retBase = R.retail.filter(modelOk);
+  const enq = enqBase.filter(r => ageOk(r) && varOk(r));
+  const book = bookBase.filter(r => ageOk(r) && varOk(r));
+  const retail = retBase.filter(r => ageOk(r) && varOk(r));
+
+  // ---- variant rows ----
+  const rows = new Map();
+  const get = (i) => {
+    let o = rows.get(i);
+    if (!o) { o = { v: i, enq: 0, td: 0, lost: 0, book: 0, retail: 0, fuels: new Map(), models: new Map() }; rows.set(i, o); }
+    return o;
+  };
+  const tally = (map, key) => { if (key !== undefined) map.set(key, (map.get(key) || 0) + 1); };
+  const fuelOk = (i) => (V.fuels[i] || "").trim() !== "";
+  enq.forEach(r => { const o = get(r[0]); o.enq++; o.td += r[4]; o.lost += r[5]; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
+  book.forEach(r => { const o = get(r[0]); o.book++; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
+  retail.forEach(r => { const o = get(r[0]); o.retail++; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
+  const top = (map) => { let best, bn = 0; map.forEach((n, k) => { if (n > bn) { best = k; bn = n; } }); return best; };
+  const list = Array.from(rows.values()).map(o => {
+    const f = top(o.fuels), m = top(o.models);
+    return {
+      variant: V.variants[o.v], model: m === undefined ? "" : V.models[m], fuel: f === undefined ? "" : V.fuels[f],
+      enquiries: o.enq, test_drives: o.td, bookings: o.book, retail: o.retail, lost: o.lost,
+      e2t: pct(o.td, o.enq), e2b: pct(o.book, o.enq), e2r: pct(o.retail, o.enq), b2r: pct(o.retail, o.book + o.retail),
+    };
+  });
+  list.sort((a, b) => (b.enquiries - a.enquiries) || (b.bookings - a.bookings) || (b.retail - a.retail));
+
+  // ---- KPI cards ----
+  const e = enq.length, td = enq.reduce((a, r) => a + r[4], 0), lost = enq.reduce((a, r) => a + r[5], 0);
+  const b = book.length, rt = retail.length;
+
+  // ---- chart 1: variant-wise enquiries (ignores the variant selection) ----
+  const vc = new Map();
+  enqBase.filter(ageOk).forEach(r => vc.set(r[0], (vc.get(r[0]) || 0) + 1));
+  const variant_chart = Array.from(vc.entries()).sort((a, b2) => b2[1] - a[1]).map(([i, n]) => ({ label: V.variants[i], value: n }));
+
+  // ---- chart 2: ageing buckets (ignores the ageing selection) ----
+  const ageBase = enqBase.filter(varOk);
+  const ageing = buckets.map(([value, label, lo, hi]) => ({
+    value, label, count: ageBase.reduce((a, r) => a + (r[3] >= lo && r[3] <= hi ? 1 : 0), 0),
+  }));
+
+  // ---- Model dropdown: every model with activity (ignores model / variant / ageing choices) ----
+  const mo = new Map();
+  const bump = (arr, key) => arr.forEach(r => {
+    const name = V.models[r[1]];
+    if (MV_HIDDEN_MODELS.has(String(name).toLowerCase())) return;
+    let o = mo.get(name); if (!o) { o = { label: name, enquiries: 0, bookings: 0, retail: 0 }; mo.set(name, o); }
+    o[key]++;
+  });
+  bump(R.enq, "enquiries"); bump(R.book, "bookings"); bump(R.retail, "retail");
+  const model_options = Array.from(mo.values()).sort((a, b2) =>
+    (b2.enquiries - a.enquiries) || (b2.bookings - a.bookings) || (b2.retail - a.retail));
+
+  // ---- waiting for delivery: the very same Booked rows the Bookings card counts, longest wait first ----
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const waiting = book.map(r => {
+    const bd = r[7] || "";
+    const days = bd ? Math.max(0, Math.round((today - new Date(bd + "T00:00:00")) / 86400000)) : null;
+    return { customer: r[4] || "", variant: V.variants[r[0]], model: V.models[r[1]], color: r[5] || "", consultant: r[6] || "", booked: bd, days };
+  }).sort((a, b2) => ((b2.days ?? -1) - (a.days ?? -1)) || (a.customer < b2.customer ? -1 : 1));
+
+  return {
+    waiting,
+    model: mvState.model, dim: mvState.dim, model_options, selected_model: selModel,
+    period: R.period, period_label: R.period_label,
+    kpis: {
+      enquiries: e, test_drives: td, test_drive_rate: pct(td, e), bookings: b, retail: rt, lost,
+      e2b: pct(b, e), e2r: pct(rt, e), b2r: pct(rt, b + rt), variant_count: list.length,
+      top_variant: list.length ? list[0].variant : "",
+    },
+    variants: list, variant_chart, ageing,
+  };
 }
 
 function toggleInSet(set, value) {
@@ -876,15 +994,22 @@ function renderModelWindow(d) {
     `${MV_KIND[mvState.dim] || "Model Group"} · ${d.period_label} · ${fmtInt(k.variant_count)} variant(s) · ${fmtInt(k.enquiries)} enquiries` +
     (filterBits.length ? ` · ${filterBits.join(" · ")}` : "");
 
+  // Plain-language cards. Delivered + Pending always add up to Total booked, so the numbers can be checked at a glance.
+  const booked = k.bookings + k.retail;          // everyone who has booked: delivered + still pending
+  const plural = (n, w) => `${fmtInt(n)} ${w}${n === 1 ? "" : "s"}`;
   const cards = [
     { label: "Total enquiries", value: fmtInt(k.enquiries), color: HY.navy,
-      sub: k.top_variant ? `Top variant: ${esc(k.top_variant)}` : "No variants" },
+      sub: k.top_variant ? `Most asked for: ${esc(k.top_variant)}` : "No enquiries" },
     { label: "Test drives", value: fmtInt(k.test_drives), color: HY.blue,
-      sub: `${fmtPct(k.test_drive_rate)} of enquiries` },
-    { label: "Bookings", value: fmtInt(k.bookings), color: HY.mid,
-      sub: `Enquiry → Booking ${fmtPct(k.e2b)}` },
-    { label: "Retails", value: fmtInt(k.retail), color: HY.orange,
-      sub: `Enquiry → Retail ${fmtPct(k.e2r)} · B2R ${fmtPct(k.b2r)}` },
+      sub: `${fmtInt(k.test_drives)} of ${fmtInt(k.enquiries)} enquiries took a test drive (${fmtPct(k.test_drive_rate)})` },
+    { label: "Total booked", value: fmtInt(booked), color: HY.mid,
+      sub: booked ? `${plural(booked, "customer")} booked a car: ${fmtInt(k.retail)} delivered + ${fmtInt(k.bookings)} pending` : "Nobody has booked yet" },
+    { label: "Delivered (Retail)", value: fmtInt(k.retail), color: "#1C9165",
+      sub: booked ? `${plural(k.retail, "customer")} already received the car` : "No delivery yet" },
+    { label: "Pending for delivery (Booked)", value: fmtInt(k.bookings), color: HY.orange,
+      sub: booked ? `${plural(k.bookings, "customer")} booked but still waiting for the car (list below)` : "Nothing pending" },
+    { label: "Delivery rate", value: booked ? fmtPct(k.b2r) : "\u2014", color: HY.navy,
+      sub: booked ? `${fmtInt(k.retail)} of ${fmtInt(booked)} booked customers have received their car` : "Needs at least one booking" },
   ];
   mvEl("mvKpis").innerHTML = cards.map(c => `
     <div class="mv-kpi" style="--k:${c.color}">
@@ -897,6 +1022,7 @@ function renderModelWindow(d) {
   renderMvVariantChart(d);
   renderMvAgeChart(d);
   renderMvTable(d);
+  renderMvWait(d);
 
   const note = mvEl("mvFilterNote");
   const parts = [];
@@ -944,6 +1070,16 @@ function renderMvVariantChart(d) {
   const values = items.map(i => i.value);
   const sel = mvState.variants;
   const colors = labels.map(l => (!sel.size || sel.has(l)) ? HY.navy : "rgba(0,44,95,0.22)");
+  const sameBars = state.charts["mvVariantChart"] && mvChartData.labels.join("\u0001") === labels.join("\u0001");
+  mvChartData.labels = labels; mvChartData.values = values;
+
+  if (sameBars) {                                   // clicking a bar: just recolour, no rebuild
+    const ch = state.charts["mvVariantChart"];
+    ch.data.datasets[0].data = values;
+    ch.data.datasets[0].backgroundColor = colors;
+    ch.update("none");
+    return;
+  }
   const box = mvEl("mvBarBox");
   box.style.height = `${Math.max(200, items.length * 30 + 40)}px`;
   destroyChart("mvVariantChart");
@@ -954,7 +1090,7 @@ function renderMvVariantChart(d) {
     data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4, maxBarThickness: 20 }] },
     options: {
       indexAxis: "y", responsive: true, maintainAspectRatio: false,
-      animation: { duration: 250 },
+      animation: false,
       layout: { padding: { right: 30 } },
       plugins: {
         legend: { display: false },
@@ -962,7 +1098,7 @@ function renderMvVariantChart(d) {
       },
       onClick: (evt, els) => {
         if (!els.length) return;
-        toggleInSet(mvState.variants, labels[els[0].index]);
+        toggleInSet(mvState.variants, mvChartData.labels[els[0].index]);
         refreshModelWindow();
       },
       onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
@@ -982,9 +1118,10 @@ function renderMvVariantChart(d) {
       afterDatasetsDraw(chart) {
         const { ctx: c } = chart;
         c.save(); c.font = "700 11px Inter, sans-serif"; c.fillStyle = HY.navy; c.textBaseline = "middle";
+        const ink = cssVar("--ink");
         chart.getDatasetMeta(0).data.forEach((bar, i) => {
-          c.fillStyle = cssVar("--ink");
-          c.fillText(String(values[i]), bar.x + 6, bar.y);
+          c.fillStyle = ink;
+          c.fillText(String(mvChartData.values[i]), bar.x + 6, bar.y);
         });
         c.restore();
       },
@@ -998,21 +1135,30 @@ function renderMvAgeChart(d) {
   const palette = [HY.blue, HY.mid, HY.navy, HY.orange];
   const sel = mvState.ages;
   const colors = buckets.map((b, i) => (!sel.size || sel.has(b.value)) ? palette[i % palette.length] : palette[i % palette.length] + "40");
-  destroyChart("mvAgeChart");
+  mvChartData.buckets = buckets; mvChartData.total = total;
+
+  const existing = state.charts["mvAgeChart"];
+  if (existing) {                                   // clicking a slice / bar: update numbers + colours only
+    existing.data.labels = buckets.map(b => b.label);
+    existing.data.datasets[0].data = buckets.map(b => b.count);
+    existing.data.datasets[0].backgroundColor = colors;
+    existing.update("none");
+    return;
+  }
   const ctx = mvEl("mvAgeChart").getContext("2d");
   state.charts["mvAgeChart"] = new Chart(ctx, {
     type: "doughnut",
     data: { labels: buckets.map(b => b.label), datasets: [{ data: buckets.map(b => b.count), backgroundColor: colors, borderColor: cssVar("--surface"), borderWidth: 2 }] },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: "52%",
-      animation: { duration: 250 },
+      animation: false,
       plugins: {
         legend: { position: "right", labels: { color: baseInkColor(), boxWidth: 12, padding: 12 } },
-        tooltip: { callbacks: { label: (it) => ` ${it.raw} enquiries (${total ? ((it.raw / total) * 100).toFixed(0) : 0}%)` } },
+        tooltip: { callbacks: { label: (it) => ` ${it.raw} enquiries (${mvChartData.total ? ((it.raw / mvChartData.total) * 100).toFixed(0) : 0}%)` } },
       },
       onClick: (evt, els) => {
         if (!els.length) return;
-        toggleInSet(mvState.ages, buckets[els[0].index].value);
+        toggleInSet(mvState.ages, mvChartData.buckets[els[0].index].value);
         refreshModelWindow();
       },
       onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
@@ -1022,11 +1168,12 @@ function renderMvAgeChart(d) {
       afterDatasetsDraw(chart) {
         const { ctx: c } = chart;
         const meta = chart.getDatasetMeta(0);
+        const bk = mvChartData.buckets, tot = mvChartData.total;
         c.save(); c.textAlign = "center"; c.textBaseline = "middle"; c.fillStyle = "#fff";
         meta.data.forEach((arc, i) => {
-          const n = buckets[i].count;
-          if (!n || !total) return;
-          const pct = Math.round((n / total) * 100);
+          const n = bk[i] ? bk[i].count : 0;
+          if (!n || !tot) return;
+          const pct = Math.round((n / tot) * 100);
           if (pct < 5) return;
           const pos = arc.tooltipPosition();
           c.font = "700 12px Inter, sans-serif";
@@ -1043,8 +1190,8 @@ function renderMvAgeChart(d) {
 const MV_COLS = [
   { key: "enquiries", label: "Enquiries", fmt: fmtInt },
   { key: "test_drives", label: "Test Drives", fmt: fmtInt },
-  { key: "bookings", label: "Bookings", fmt: fmtInt },
-  { key: "retail", label: "Retails", fmt: fmtInt },
+  { key: "bookings", label: "Bookings (pending)", fmt: fmtInt },
+  { key: "retail", label: "Retails (delivered)", fmt: fmtInt },
   { key: "e2t", label: "E2T %", fmt: fmtPct },
   { key: "e2b", label: "E2B %", fmt: fmtPct },
   { key: "e2r", label: "E2R %", fmt: fmtPct },
@@ -1074,6 +1221,53 @@ function renderMvTable(d) {
                 e2t: k.test_drive_rate, e2b: k.e2b, e2r: k.e2r, b2r: k.b2r };
   mvEl("mvTableFoot").innerHTML =
     `<tr><td>Total</td>${showModel ? "<td></td>" : ""}<td></td>${MV_COLS.map(c => `<td>${c.fmt(tot[c.key])}</td>`).join("")}</tr>`;
+}
+
+function renderMvWait(d) {
+  const rows = d.waiting || [];
+  const showModel = mvState.dim !== "model", showCons = mvState.dim !== "consultant";
+  const withDays = rows.filter(r => r.days !== null);
+  const oldest = withDays.length ? withDays[0].days : null;
+  const avg = withDays.length ? withDays.reduce((a, r) => a + r.days, 0) / withDays.length : null;
+  mvEl("mvWaitCount").textContent = `(${rows.length} customer${rows.length === 1 ? "" : "s"}` +
+    (oldest !== null ? ` · oldest ${oldest} day${oldest === 1 ? "" : "s"} · average ${avg.toFixed(1)} days` : "") + ")";
+  mvEl("mvWaitNote").textContent =
+    "Customers who have booked a car but have not received it yet. The number matches the " +
+    "\u201cPending for delivery\u201d card above. Days waiting = days since the booking date, up to today.";
+  mvEl("mvWaitHead").innerHTML = `<tr><th>Customer</th><th>Variant</th>${showModel ? "<th>Model</th>" : ""}<th>Color</th>` +
+    `${showCons ? "<th>Consultant</th>" : ""}<th>Booking date</th><th>Days waiting</th></tr>`;
+  const cols = 5 + (showModel ? 1 : 0) + (showCons ? 1 : 0);
+  if (!rows.length) {
+    mvEl("mvWaitBody").innerHTML = `<tr><td colspan="${cols}" class="empty-cell">Nobody is pending for delivery in this selection.</td></tr>`;
+    return;
+  }
+  mvEl("mvWaitBody").innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.customer) || "—"}</td>
+      <td>${esc(r.variant)}</td>
+      ${showModel ? `<td>${esc(r.model)}</td>` : ""}
+      <td>${esc(r.color) || "—"}</td>
+      ${showCons ? `<td>${esc(r.consultant) || "—"}</td>` : ""}
+      <td data-sort="${esc(r.booked)}">${r.booked ? esc(fmtIsoLong(r.booked)) : "—"}</td>
+      <td data-sort="${r.days ?? ""}">${r.days === null ? "—" : `<span class="mv-days${r.days >= 15 ? " long" : ""}">${r.days}</span>`}</td>
+    </tr>`).join("");
+}
+
+function exportWaitingList() {
+  const d = mvState.data;
+  if (!d) return;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const header = ["Customer", "Variant", "Model", "Color", "Consultant", "Booking date", "Days waiting"];
+  const lines = [header.map(q).join(",")];
+  (d.waiting || []).forEach(r => lines.push([r.customer, r.variant, r.model, r.color, r.consultant, r.booked, r.days ?? ""].map(q).join(",")));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const picked = mvState.dim !== "model" && d.selected_model && d.selected_model !== "all" ? `_${d.selected_model}` : "";
+  const safe = (d.model + picked).replace(/[^\w\-]+/g, "_");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${safe}_pending_for_delivery_${d.period || "all"}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function exportModelWindow() {
@@ -1111,9 +1305,21 @@ function exportModelWindow() {
         openModelWindow(e.target.dataset.mvPrefix, e.target.dataset.mvModel, e.target.dataset.mvDim || "model");
       }
     });
+    // Pre-load the data the moment the mouse is over a row (or a finger touches it): by the time you click, it is ready
+    const warm = (e) => {
+      const row = e.target.closest && e.target.closest("tr.mv-row");
+      if (row && !row._mvWarm) {
+        row._mvWarm = true;
+        mvLoadRecords(row.dataset.mvModel, row.dataset.mvDim || "model", readFilterBar(row.dataset.mvPrefix)).catch(() => {});
+        setTimeout(() => { row._mvWarm = false; }, 4000);
+      }
+    };
+    document.addEventListener("mouseover", warm);
+    document.addEventListener("touchstart", warm, { passive: true });
     mvEl("mvClose").addEventListener("click", closeModelWindow);
     mvEl("mvModal").addEventListener("click", (e) => { if (e.target === mvEl("mvModal")) closeModelWindow(); });
     mvEl("mvExport").addEventListener("click", exportModelWindow);
+    mvEl("mvWaitExport").addEventListener("click", exportWaitingList);
     mvEl("mvModelSelect").addEventListener("change", onMvModelChange);
     mvEl("mvClear").addEventListener("click", () => {
       mvState.variants = new Set(); mvState.ages = new Set(); refreshModelWindow();
@@ -1128,18 +1334,25 @@ function exportModelWindow() {
 /* ---------------------------------------------------------------------- */
 const fuState = { scope: "today", date: null, data: null, cancelScope: "followup_cancel" };
 
+/* Follow-up date range. From = the first day, To = the last day (both default to today).
+   Due = dated from..to | Previous pending = before From | Upcoming = after To. */
 function fuFilters() {
   const f = readFilterBar("fu");
-  const asOf = document.getElementById("fuDate").value || todayISO();
-  return { ...f, asOf };
+  let from = document.getElementById("fuFrom").value || todayISO();
+  let to = document.getElementById("fuTo").value || from;
+  if (to < from) [from, to] = [to, from];
+  return { ...f, asOf: from, from, to };
 }
 
 function fuQuery(extra = {}) {
   const f = fuFilters();
   return new URLSearchParams({
-    as_of: f.asOf, period: f.month, model: f.model, consultant: f.consultant, source: f.source, ...extra,
+    as_of: f.from, from_date: f.from, to_date: f.to,
+    period: f.month, model: f.model, consultant: f.consultant, source: f.source, ...extra,
   }).toString();
 }
+
+const fuRangeLabel = (d) => (d.from === d.to ? fmtIsoLong(d.from) : `${fmtIsoLong(d.from)} – ${fmtIsoLong(d.to)}`);
 
 function overdueBadge(days) {
   if (days === null || days === undefined) return badge("No date", "grey");
@@ -1150,27 +1363,33 @@ function overdueBadge(days) {
 
 async function loadFollowup() {
   await populateFilterBar("fu");
-  const dateEl = document.getElementById("fuDate");
-  if (!dateEl.value) dateEl.value = todayISO();
+  const fromEl = document.getElementById("fuFrom"), toEl = document.getElementById("fuTo");
+  if (!fromEl.value) fromEl.value = todayISO();
+  if (!toEl.value) toEl.value = fromEl.value;
+  fromEl.max = toEl.value; toEl.min = fromEl.value;           // the range can never run backwards
 
   const f = fuFilters();
   const data = await getJSON(`/api/followup?${fuQuery()}`);
   fuState.data = data;
   const k = data.kpis;
-  const ref = fmtIsoLong(data.as_of);
+  const ref = fuRangeLabel(data);
+  const isRange = data.from !== data.to;
+  document.getElementById("fuDueHead").textContent = isRange ? "Due in range" : "Due today";
+  document.getElementById("fuTodayTab").textContent = isRange ? "Due in selected dates" : "Due today";
+  FU_LIST_TITLES.today = isRange ? "Follow-ups due in the selected dates" : "Follow-ups due today";
 
   renderKpiGrid("fuKpiGrid", [
-    { label: "Due today", value: fmtInt(k.due_today), color: "var(--amber)", sub: `follow-ups dated ${ref}` },
+    { label: isRange ? "Due in selected dates" : "Due today", value: fmtInt(k.due_today), color: "var(--amber)", sub: `follow-ups dated ${ref}` },
     { label: "Previous days pending", value: fmtInt(k.pending_previous), color: "var(--red)",
-      sub: "follow-up date passed, still open" },
-    { label: "Upcoming (next 7 days)", value: fmtInt(k.upcoming_7_days), color: "var(--blue)",
+      sub: isRange ? `dated before ${fmtIsoLong(data.from)}, still open` : "follow-up date passed, still open" },
+    { label: isRange ? "Upcoming (7 days after To date)" : "Upcoming (next 7 days)", value: fmtInt(k.upcoming_7_days), color: "var(--blue)",
       sub: `${fmtInt(k.upcoming_total)} upcoming in total` },
     { label: "Open follow-ups", value: fmtInt(k.open_followups), color: "var(--green)",
       sub: k.no_followup_date ? `${fmtInt(k.no_followup_date)} have no follow-up date` : "status = Enquiry Follow up" },
     { label: "Enquiry follow up cancel", value: fmtInt(k.followup_cancel), color: "var(--red)",
-      sub: `cancelled in ${state.meta.available_periods.find(p => p.value === f.month)?.label || f.month}` },
+      sub: `${isRange ? "cancelled between" : "cancelled on"} ${ref}` },
     { label: "Appointed enquiry cancel", value: fmtInt(k.appointed_cancel), color: "var(--red)",
-      sub: `cancelled in ${state.meta.available_periods.find(p => p.value === f.month)?.label || f.month}` },
+      sub: `${isRange ? "cancelled between" : "cancelled on"} ${ref}` },
   ]);
 
   // ---- day-wise chart ----
@@ -1183,7 +1402,7 @@ async function loadFollowup() {
   if (data.older_pending) extra.push(`${fmtInt(data.older_pending)} more pending from before this window`);
   if (data.later_upcoming) extra.push(`${fmtInt(data.later_upcoming)} more after it`);
   document.getElementById("fuDayNote").textContent =
-    `${data.window_days} days either side of ${ref}. Red = pending · Amber = today · Blue = upcoming. Click a bar to list that day.` +
+    `${data.window_days} days either side of ${ref}. Red = pending · Amber = ${isRange ? "selected dates" : "today"} · Blue = upcoming. Click a bar to list that day.` +
     (extra.length ? ` (${extra.join("; ")} — see the date-wise schedule.)` : "");
 
   // ---- pending age ----
@@ -1207,7 +1426,7 @@ async function loadFollowup() {
       <td>${fmtInt(r.due_today)}</td><td>${fmtInt(r.upcoming)}</td><td><strong>${fmtInt(r.total)}</strong></td></tr>`).join("")
     : `<tr><td colspan="5" class="empty-cell">No open follow-ups for this selection.</td></tr>`;
 
-  await Promise.all([loadFollowupList(), loadFollowupCancelList()]);
+  await Promise.all([loadFollowupList(), loadFollowupCancelList(), loadBookedFollowups()]);
 }
 
 function setFollowupScope(scope, date = null) {
@@ -1271,6 +1490,524 @@ async function loadFollowupCancelList() {
       <td>${r.lost_reason ? badge(r.lost_reason, "red") : "—"}</td><td class="wrap">${dash(r.lost_remark || r.remarks)}</td>
     </tr>`).join("") : `<tr><td colspan="9" class="empty-cell">No cancelled enquiries for this selection.</td></tr>`;
 }
+
+
+/* ---------------------------------------------------------------------- */
+/* Follow-up page > Booked enquiries by number of follow-ups               */
+/*   4 cards (0 / 1 / 2 / 3 follow-ups), one Model / Consultant / Colour   */
+/*   table, and a pop-up with the full customer details (no charts).       */
+/*   Same Hyundai-styled window as the Overview page's model window.       */
+/* ---------------------------------------------------------------------- */
+const fbState = {
+  data: null, dim: "model",
+  open: false, win: { dim: "all", label: "", bucket: "all", bookedOnly: false },   // what the pop-up is showing
+};
+const FB_DIM_LABEL = { model: "Model", consultant: "Consultant", color: "Colour" };
+const FB_DIM_TAG = { all: "FOLLOW-UP WINDOW", model: "MODEL WINDOW", consultant: "CONSULTANT WINDOW", color: "COLOUR WINDOW" };
+const FB_DIM_KEY = { model: "model", consultant: "consultant", color: "color" };
+const FB_BUCKETS = [0, 1, 2, 3, 4];
+const FB_TONE = { 0: "var(--green)", 1: "var(--blue)", 2: "var(--amber)", 3: "var(--red)", 4: "var(--red)" };
+const fbEl = (id) => document.getElementById(id);
+const fbBucketText = (b) => (b === 4 ? "4+" : String(b));
+const fbFollowText = (b) => (b === 4 ? "4 or more follow-ups" : b === 0 ? "0 follow-up" : b === 1 ? "1 follow-up" : `${b} follow-ups`);
+const fbPct = (n, total) => (total ? `${((n / total) * 100).toFixed(1)}%` : "0.0%");
+
+function fbBasisText(d) {
+  if (!d) return "";
+  return d.basis === "column"
+    ? `Follow-ups are taken from the “${d.basis_column}” column of the workbook.`
+    : `Estimated: the workbook has no follow-up history, so each enquiry gets 1 follow-up per ${d.cadence_days} days from the enquiry date ` +
+      `to its booking date (follow-ups stop once booked; retail closes it) or cancel date, or today if still open; a new Lead = 0. Add a “Follow up Count” column to the Enquiry sheet to use real numbers.`;
+}
+
+async function loadBookedFollowups() {
+  const f = fuFilters();
+  let d;
+  try {
+    d = await getJSON(`/api/followup/booked?${new URLSearchParams({ model: f.model, consultant: f.consultant, source: f.source, as_of: f.to })}`);
+  } catch (err) {
+    fbEl("fuBookNote").textContent = "Could not load booked follow-up details. Please refresh.";
+    return;
+  }
+  fbState.data = d;
+  const k = d.kpis;
+
+  // ---- the 4 cards ----
+  const cards = [0, 1, 2, 3].map(b => ({
+    b,
+    label: `Booked · ${fbFollowText(b)}`,
+    value: fmtInt(k[`b${b}`]),
+    color: FB_TONE[b],
+    sub: b === 3 && k.b4
+      ? `${fbPct(k.b3, k.booked)} of ${fmtInt(k.booked)} booked · +${fmtInt(k.b4)} with 4 or more`
+      : `${fbPct(k[`b${b}`], k.booked)} of ${fmtInt(k.booked)} booked`,
+  }));
+  fbEl("fuBookKpiGrid").innerHTML = cards.map(c => `
+    <div class="kpi-card" role="button" tabindex="0" data-fb-bucket="${c.b}" style="--bar-color:${c.color}"
+         title="Click to see the customers">
+      <div class="kpi-label">${esc(c.label)}</div>
+      <div class="kpi-value">${c.value}</div>
+      <div class="kpi-sub">${esc(c.sub)}</div>
+    </div>`).join("");
+  fbEl("fuBookNote").textContent = `Cards: the ${fmtInt(k.booked)} enquiries that reached booking (${fmtInt(k.booked - k.retailed)} booked + ${fmtInt(k.retailed)} retailed) out of ${fmtInt(k.enquiries)} total · click a card for the customer list. ` + fbBasisText(d);
+
+  renderBookedTable();
+}
+
+function renderBookedTable() {
+  const d = fbState.data;
+  const dim = fbState.dim;
+  const head = fbEl("fuBookHead"), body = fbEl("fuBookBody"), foot = fbEl("fuBookFoot");
+  const rows = (d && d[`by_${dim}`]) || [];
+  const k = d ? d.kpis : null;
+  const show4 = !!(k && k.c4);                                   // the 4+ column appears only when it has data
+  const buckets = show4 ? FB_BUCKETS : [0, 1, 2, 3];
+  const ncols = 2 + buckets.length;
+  head.innerHTML = `<tr><th>${FB_DIM_LABEL[dim]}</th><th>Total enquiries</th>` +
+    buckets.map(b => `<th>${fbBucketText(b)} follow-up${b <= 1 ? "" : "s"}</th>`).join("") + `</tr>`;
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${ncols}" class="empty-cell">No enquiries for this selection.</td></tr>`;
+    foot.innerHTML = "";
+    return;
+  }
+  const cell = (r, b) => {
+    const n = r[`c${b}`];
+    return `<td class="fb-cell ${n ? "has" : "zero"}" ${n ? `data-fb-dim="${dim}" data-fb-label="${esc(r.label)}" data-fb-bucket="${b}"` : ""}>${fmtInt(n)}</td>`;
+  };
+  body.innerHTML = rows.map(r => `
+    <tr class="fb-row" tabindex="0" data-fb-dim="${dim}" data-fb-label="${esc(r.label)}" data-fb-bucket="all"
+        title="Click to see all ${fmtInt(r.enquiries)} enquir${r.enquiries === 1 ? "y" : "ies"} of ${esc(r.label)}">
+      <td>${esc(r.label)}</td>
+      <td><strong>${fmtInt(r.enquiries)}</strong></td>
+      ${buckets.map(b => cell(r, b)).join("")}
+    </tr>`).join("");
+  const tcell = (b) => `<td class="fb-cell" ${k[`c${b}`] ? `data-fb-dim="all" data-fb-label="" data-fb-bucket="${b}"` : ""}>${fmtInt(k[`c${b}`])}</td>`;
+  foot.innerHTML = `<tr><td>Total</td><td>${fmtInt(k.enquiries)}</td>${buckets.map(tcell).join("")}</tr>`;
+}
+
+/* ---------- pop-up ---------- */
+function fbWindowRows() {
+  const d = fbState.data;
+  if (!d) return [];
+  const w = fbState.win;
+  return d.rows.filter(r => {
+    if (w.bookedOnly && !r.is_booked) return false;
+    if (w.dim !== "all") {
+      const v = r[FB_DIM_KEY[w.dim]];
+      if (v !== w.label) return false;
+    }
+    return true;
+  });
+}
+
+function openFollowupWindow(dim, label, bucket, bookedOnly = false) {
+  if (!fbState.data) return;
+  fbState.win = { dim: dim || "all", label: label || "", bookedOnly: !!bookedOnly,
+                  bucket: bucket === "all" || bucket === undefined ? "all" : Number(bucket) };
+  const modal = fbEl("fbModal");
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  fbState.open = true;
+  renderFollowupWindow();
+  fbEl("fbClose").focus();
+  fbEl("fbModal").querySelector(".mv-body").scrollTop = 0;
+}
+
+function closeFollowupWindow() {
+  const modal = fbEl("fbModal");
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
+  if (!mvState.open) document.body.style.overflow = "";
+  fbState.open = false;
+}
+
+function fbVisibleRows() {
+  const scoped = fbWindowRows();
+  const b = fbState.win.bucket;
+  return b === "all" ? scoped : scoped.filter(r => r.bucket === b);
+}
+
+const FB_STAGE_TONE = { "Booked": "amber", "Retailed · Closed": "green", "Cancelled": "red",
+  "Appointed": "blue", "Lead": "grey", "In follow-up": "blue" };
+const fbStageBadge = (st) => badge(st || "—", FB_STAGE_TONE[st] || "grey");
+const fbShort = (d) => (d ? d.slice(0, 5) : "");          // dd/mm/yyyy -> dd/mm
+
+/* The enquiry's story: follow-ups (up to the booking / cancel date, or today), then Booked, then Retailed = closed. */
+function fbHistoryCell(r) {
+  const parts = [];
+  (r.history || []).forEach((d, i) => parts.push(`<span class="fb-chip f" title="Follow-up ${i + 1} (estimated) on ${esc(d)}">F${i + 1} · ${esc(fbShort(d))}</span>`));
+  if (!parts.length && r.followups === 0) parts.push(`<span class="fb-chip n">No follow-up</span>`);
+  if (!parts.length && r.followups > 0) parts.push(`<span class="fb-chip n">${r.followups} follow-up${r.followups === 1 ? "" : "s"}</span>`);
+  if ((r.followups || 0) > (r.history || []).length && (r.history || []).length) parts.push(`<span class="fb-chip n">+${r.followups - r.history.length} more</span>`);
+  if (r.booking_date) parts.push(`<span class="fb-chip b" title="Booking date">Booked · ${esc(fbShort(r.booking_date))}</span>`);
+  if (r.retail_date) parts.push(`<span class="fb-chip r" title="Retail date - enquiry closed">Retailed · ${esc(fbShort(r.retail_date))} ✓ closed</span>`);
+  if (r.stage === "Cancelled" && r.lost_date) parts.push(`<span class="fb-chip x" title="Cancelled on">Cancelled · ${esc(fbShort(r.lost_date))}</span>`);
+  return parts.join(" ");
+}
+
+function renderFollowupWindow() {
+  const d = fbState.data, w = fbState.win;
+  const scoped = fbWindowRows();
+  const rows = fbVisibleRows();
+  const f = fuFilters();
+  const nBooked = scoped.filter(r => r.is_booked).length;
+  const noun = w.bookedOnly ? "booked enquiry" : "enquiry";
+  const nouns = w.bookedOnly ? "booked enquiries" : "enquiries";
+
+  // ---- header ----
+  fbEl("fbTitle").textContent = w.dim !== "all" ? w.label
+    : (w.bucket !== "all" ? (w.bookedOnly ? `Booked · ${fbFollowText(w.bucket)}` : `Enquiries · ${fbFollowText(w.bucket)}`)
+                          : (w.bookedOnly ? "Booked enquiries" : "All enquiries"));
+  fbEl("fbTag").textContent = FB_DIM_TAG[w.dim] || FB_DIM_TAG.all;
+  const bits = [];
+  if (w.dim !== "all") bits.push(FB_DIM_LABEL[w.dim]);
+  bits.push(`${fmtInt(scoped.length)} ${scoped.length === 1 ? noun : nouns}`);
+  if (!w.bookedOnly) bits.push(`${fmtInt(nBooked)} booked`);
+  if (w.dim !== "model" && f.model && f.model !== "all") bits.push(f.model);
+  if (w.dim !== "consultant" && f.consultant && f.consultant !== "all") bits.push(f.consultant);
+  if (f.source && f.source !== "all") bits.push(f.source);
+  fbEl("fbSub").textContent = bits.join(" · ");
+
+  // ---- clickable tiles: total, then 0 / 1 / 2 / 3 (/ 4+) follow-ups - they add up to the total ----
+  const cnt = { all: scoped.length };
+  FB_BUCKETS.forEach(b => { cnt[b] = scoped.filter(r => r.bucket === b).length; });
+  const tiles = [{ key: "all", label: w.bookedOnly ? "Booked enquiries" : "Total enquiries", color: "#002C5F" },
+    ...FB_BUCKETS.filter(b => b < 4 || cnt[4]).map(b => ({
+      key: b, label: `${fbBucketText(b)} follow-up${b <= 1 ? "" : "s"}`,
+      color: b === 0 ? "#1E9E6A" : b === 1 ? "#00AAD2" : b === 2 ? "#DD7B2E" : "#C73E3E" }))];
+  fbEl("fbKpis").style.gridTemplateColumns = `repeat(${tiles.length}, 1fr)`;
+  fbEl("fbKpis").innerHTML = tiles.map(t => `
+    <div class="mv-kpi ${String(w.bucket) === String(t.key) ? "active" : ""}" role="button" tabindex="0"
+         data-fb-tile="${t.key}" style="--k:${t.color}">
+      <div class="mv-kpi-label">${esc(t.label)}</div>
+      <div class="mv-kpi-value">${fmtInt(cnt[t.key])}</div>
+      <div class="mv-kpi-sub">${t.key === "all" ? (w.bookedOnly ? "in this window" : `${fmtInt(nBooked)} booked`) : `${fbPct(cnt[t.key], scoped.length)} of ${fmtInt(scoped.length)}`}</div>
+    </div>`).join("");
+
+  const note = fbEl("fbFilterNote");
+  note.hidden = w.bucket === "all" && !w.bookedOnly;
+  fbEl("fbFilterText").textContent = `Showing ${w.bookedOnly ? "only booked enquiries" : "all enquiries"}` +
+    (w.bucket === "all" ? "" : ` with ${fbFollowText(w.bucket)}`);
+  fbEl("fbClear").textContent = "Show all enquiries";
+  fbEl("fbClear").hidden = w.bucket === "all" && !w.bookedOnly;
+
+  // ---- full detail table ----
+  fbEl("fbTableHead").innerHTML =
+    `<tr><th>Enquiry No.</th><th>Customer</th><th>Phone</th><th>Model</th><th>Variant</th><th>Colour</th><th>Fuel</th>` +
+    `<th>Consultant</th><th>Source</th><th>Enquiry date</th><th>Follow-ups</th><th>Follow-up history</th>` +
+    `<th>Booking date</th><th>Retail date</th><th>Stage</th><th>Days to book</th>` +
+    `<th>Test drive</th><th>Next follow-up</th><th>Status</th><th>Remarks</th></tr>`;
+  fbEl("fbTableBody").innerHTML = rows.length ? rows.map(r => `
+    <tr>
+      <td class="fb-enq">${dash(r.enq_no)}</td>
+      <td>${esc(r.customer)}</td><td>${dash(r.phone)}</td><td>${esc(r.model)}</td><td>${dash(r.variant)}</td>
+      <td>${esc(r.color)}</td><td>${r.fuel ? `<span class="mv-fuel">${esc(r.fuel)}</span>` : "—"}</td>
+      <td>${esc(r.consultant)}</td><td>${dash(r.source)}</td><td>${dash(r.enquiry_date)}</td>
+      <td>${r.bucket === null || r.followups === null ? "—" : `<span class="fb-pill p${r.bucket}">${r.followups}</span>`}</td>
+      <td class="wrap fb-hist">${fbHistoryCell(r)}</td>
+      <td>${dash(r.booking_date)}</td><td>${dash(r.retail_date)}</td>
+      <td>${fbStageBadge(r.stage)}</td>
+      <td>${r.days_to_book === null ? "—" : fmtInt(r.days_to_book)}</td>
+      <td>${r.test_drive === "Y" ? badge("Done", "green") : "—"}</td><td>${dash(r.next_followup)}</td>
+      <td>${dash(r.status)}</td>
+      <td class="wrap">${dash(r.remarks)}</td>
+    </tr>`).join("")
+    : `<tr><td colspan="20" class="empty-cell">${scoped.length === 0 && w.dim !== "all"
+        ? `${esc(w.label)} has no enquiry for this selection.`
+        : "No enquiries for this selection."}</td></tr>`;
+  fbEl("fbTableCount").textContent = `(${fmtInt(rows.length)} ${rows.length === 1 ? noun : nouns})`;
+}
+
+function exportFollowupWindow() {
+  const rows = fbVisibleRows();
+  if (!rows.length) return;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const header = ["Enquiry No.", "Customer", "Phone", "Model", "Variant", "Colour", "Fuel", "Consultant", "Source", "Enquiry date",
+    "Follow-ups", "Follow-up history (est.)", "Booking date", "Retail date", "Stage", "Days to book", "Test drive", "Next follow-up", "Status", "Remarks"];
+  const lines = [header.map(q).join(",")];
+  rows.forEach(r => lines.push([r.enq_no, r.customer, r.phone, r.model, r.variant, r.color, r.fuel, r.consultant, r.source,
+    r.enquiry_date, r.followups, (r.history || []).map((d, i) => `F${i + 1} ${d}`).join(" | "), r.booking_date, r.retail_date,
+    r.stage, r.days_to_book, r.test_drive === "Y" ? "Done" : "", r.next_followup, r.status, r.remarks].map(q).join(",")));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const w = fbState.win;
+  const part = [w.dim === "all" ? "enquiries" : w.label, w.bucket === "all" ? "all" : `booked_${fbBucketText(w.bucket)}_followups`].join("_");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${part.replace(/[^\w\-]+/g, "_")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+(function initFollowupWindow() {
+  const wire = () => {
+    const openFrom = (el) => openFollowupWindow(el.dataset.fbDim || "all", el.dataset.fbLabel || "", el.dataset.fbBucket);
+    document.addEventListener("click", (e) => {
+      const card = e.target.closest("#fuBookKpiGrid [data-fb-bucket]");
+      if (card) { openFollowupWindow("all", "", card.dataset.fbBucket, true); return; }
+      const cell = e.target.closest("#fuBookTable td[data-fb-bucket]");          // a number: that row + that group
+      if (cell) { openFrom(cell); return; }
+      const row = e.target.closest("#fuBookTable tr.fb-row");                    // the row: every follow-up group
+      if (row) { openFrom(row); return; }
+      const tile = e.target.closest("#fbKpis [data-fb-tile]");                   // tiles inside the pop-up
+      if (tile) {
+        const t = tile.dataset.fbTile;
+        const next = t === "all" ? "all" : Number(t);
+        fbState.win.bucket = (String(fbState.win.bucket) === String(next)) ? "all" : next;
+        renderFollowupWindow();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (fbState.open && e.key === "Escape") { closeFollowupWindow(); return; }
+      if ((e.key === "Enter" || e.key === " ") && e.target.matches) {
+        if (e.target.matches("#fuBookKpiGrid [data-fb-bucket]")) { e.preventDefault(); openFollowupWindow("all", "", e.target.dataset.fbBucket, true); }
+        else if (e.target.matches("#fuBookTable tr.fb-row")) { e.preventDefault(); openFrom(e.target); }
+        else if (e.target.matches("#fbKpis [data-fb-tile]")) { e.preventDefault(); e.target.click(); }
+      }
+    });
+    fbEl("fuBookTabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab-btn");
+      if (!btn) return;
+      fbState.dim = btn.dataset.dim;
+      document.querySelectorAll("#fuBookTabs .tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+      renderBookedTable();
+    });
+    fbEl("fbClose").addEventListener("click", closeFollowupWindow);
+    fbEl("fbModal").addEventListener("click", (e) => { if (e.target === fbEl("fbModal")) closeFollowupWindow(); });
+    fbEl("fbExport").addEventListener("click", exportFollowupWindow);
+    fbEl("fbClear").addEventListener("click", () => { fbState.win.bucket = "all"; fbState.win.bookedOnly = false; renderFollowupWindow(); });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
+  else wire();
+})();
+
+
+/* ---------------------------------------------------------------------- */
+/* Vehicle Stock page > pop-up with the unit-by-unit details               */
+/*   Open it from a Model / Variant / Colour row (or a Colour's model row)  */
+/*   or from the Total / Physical / In transit / Aged 60+ cards.            */
+/*   Shows HMI Invoice No & Date, TAT as on today, Model, Variant, colours, */
+/*   VIN, Order No, Stock Status, Fuel Type and Order Type.                 */
+/* ---------------------------------------------------------------------- */
+const svState = {
+  open: false, data: null, seq: 0,
+  win: { dim: "all", label: "", model: "", stage: "all", aged: false },
+};
+const svCache = new Map();
+const svEl = (id) => document.getElementById(id);
+const SV_AGED_DAYS = 60;                                           // same as the "Aged 60+ days" card
+const SV_DIM_LABEL = { all: "Vehicle stock", model: "Model", variant: "Variant", color: "Colour" };
+const SV_DIM_TAG = { all: "STOCK WINDOW", model: "MODEL WINDOW", variant: "VARIANT WINDOW", color: "COLOUR WINDOW" };
+const SV_COLS = [
+  { key: "inv_no", label: "HMI Invoice No", cls: "sv-id" },
+  { key: "inv_date", label: "HMI Invoice Date", sort: "date" },
+  { key: "tat", label: "TAT (days)", num: true },
+  { key: "model", label: "Model" },
+  { key: "variant", label: "Variant" },
+  { key: "color", label: "Exterior Color Name" },
+  { key: "interior", label: "Interior Color Desc" },
+  { key: "vin", label: "Vin Number", cls: "sv-vin" },
+  { key: "order_no", label: "Order No" },
+  { key: "status", label: "Stock Status" },
+  { key: "fuel", label: "Fuel Type" },
+  { key: "order_type", label: "Order Type" },
+  { key: "stage", label: "Stage" },
+];
+
+function svTagKpiCards() {
+  // Total stock, Physical stock, In transit and Aged 60+ days cards open the window
+  const map = { 0: { stage: "all" }, 1: { stage: "Physical" }, 2: { stage: "In Transit" }, 5: { stage: "Physical", aged: true } };
+  document.querySelectorAll("#invKpiGrid .kpi-card").forEach((card, i) => {
+    if (!map[i]) return;
+    card.classList.add("sv-click");
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    card.dataset.svCard = JSON.stringify(map[i]);
+    card.title = "Click to see the vehicles";
+    const lab = card.querySelector(".kpi-label");
+    if (lab && !lab.dataset.svArrow) { lab.dataset.svArrow = "1"; lab.insertAdjacentHTML("beforeend", ' <span class="sv-arrow">›</span>'); }
+  });
+}
+
+function svLoadUnits() {
+  const qs = inventoryApiParams(readInventoryFilters());
+  if (!svCache.has(qs)) {
+    const pr = getJSON(`/api/vehicle-stock/units?${qs}`);
+    pr.catch(() => svCache.delete(qs));
+    svCache.set(qs, pr);
+    if (svCache.size > 12) svCache.delete(svCache.keys().next().value);
+  }
+  return svCache.get(qs);
+}
+
+async function openStockWindow(win) {
+  svState.win = { dim: "all", label: "", model: "", stage: "all", aged: false, ...win };
+  svState.data = null;
+  const modal = svEl("svModal");
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  svState.open = true;
+  svEl("svTitle").textContent = svState.win.label || "Vehicle stock";
+  svEl("svTag").textContent = SV_DIM_TAG[svState.win.dim] || SV_DIM_TAG.all;
+  svEl("svSub").textContent = "Loading vehicle details…";
+  svEl("svKpis").innerHTML = ""; svEl("svTableHead").innerHTML = ""; svEl("svTableBody").innerHTML = "";
+  svEl("svClose").focus();
+  const seq = ++svState.seq;
+  try {
+    const data = await svLoadUnits();
+    if (seq !== svState.seq || !svState.open) return;
+    svState.data = data;
+    renderStockWindow();
+  } catch (err) {
+    if (seq !== svState.seq) return;
+    svEl("svSub").textContent = "Could not load vehicle details. Please try again.";
+  }
+}
+
+function closeStockWindow() {
+  const modal = svEl("svModal");
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
+  if (!fbState.open && !mvState.open) document.body.style.overflow = "";
+  svState.open = false;
+}
+
+function svScopeRows() {                                           // rows of the clicked group (before stage / aged filters)
+  const d = svState.data, w = svState.win;
+  if (!d) return [];
+  return d.rows.filter(r => {
+    if (w.dim === "model" && r.model !== w.label) return false;
+    if (w.dim === "variant" && r.variant !== w.label) return false;
+    if (w.dim === "color") {
+      if (r.color !== w.label) return false;
+      if (w.model && r.model !== w.model) return false;
+    }
+    return true;
+  });
+}
+
+function svVisibleRows() {                                          // oldest TAT first; click any heading to re-sort (app-wide sorter)
+  const w = svState.win;
+  let rows = svScopeRows();
+  if (w.stage !== "all") rows = rows.filter(r => r.stage === w.stage);
+  if (w.aged) rows = rows.filter(r => r.tat !== null && r.tat >= SV_AGED_DAYS);
+  return rows;
+}
+
+const svTatPill = (t) => (t === null || t === undefined) ? "—"
+  : `<span class="fb-pill ${t >= 90 ? "p3" : t >= 60 ? "p2" : t >= 30 ? "p1" : "p0"}">${fmtInt(t)}</span>`;
+
+function renderStockWindow() {
+  const d = svState.data, w = svState.win;
+  const scoped = svScopeRows();
+  const rows = svVisibleRows();
+  const f = readInventoryFilters();
+  const physical = scoped.filter(r => r.stage === "Physical");
+  const transit = scoped.filter(r => r.stage === "In Transit");
+  const aged = scoped.filter(r => r.stage === "Physical" && r.tat !== null && r.tat >= SV_AGED_DAYS);
+  const tats = scoped.map(r => r.tat).filter(t => t !== null);
+  const avg = tats.length ? (tats.reduce((a, b) => a + b, 0) / tats.length) : 0;
+
+  // ---- header ----
+  svEl("svTitle").textContent = w.label ? (w.model ? `${w.label} · ${w.model}` : w.label) : "Vehicle stock";
+  svEl("svTag").textContent = SV_DIM_TAG[w.dim] || SV_DIM_TAG.all;
+  const bits = [];
+  if (w.dim !== "all") bits.push(SV_DIM_LABEL[w.dim]);
+  bits.push(`${fmtInt(scoped.length)} unit${scoped.length === 1 ? "" : "s"}`);
+  if (f.model && f.model !== "all" && w.dim !== "model") bits.push(f.model);
+  if (f.fuel_type && f.fuel_type !== "all") bits.push(f.fuel_type);
+  if (f.financier && f.financier !== "all") bits.push(f.financier);
+  bits.push(`TAT as on ${d.as_of}`);
+  svEl("svSub").textContent = bits.join(" · ");
+
+  // ---- tiles (click to filter) ----
+  const tiles = [
+    { key: "all", label: "Total units", value: scoped.length, sub: "in this window", color: "#002C5F", active: w.stage === "all" && !w.aged },
+    { key: "Physical", label: "Physical", value: physical.length, sub: "on the ground", color: "#DD7B2E", active: w.stage === "Physical" && !w.aged },
+    { key: "In Transit", label: "In transit", value: transit.length, sub: "despatched, not arrived", color: "#6B4FBB", active: w.stage === "In Transit" },
+    { key: "aged", label: `Aged ${SV_AGED_DAYS}+ days`, value: aged.length, sub: "physical, TAT ≥ " + SV_AGED_DAYS, color: "#C73E3E", active: w.aged },
+    { key: "avg", label: "Avg. TAT", value: `${avg.toFixed(1)} d`, sub: "days since HMI invoice", color: "#00AAD2", active: false, still: true },
+  ];
+  svEl("svKpis").style.gridTemplateColumns = `repeat(${tiles.length}, 1fr)`;
+  svEl("svKpis").innerHTML = tiles.map(t => `
+    <div class="mv-kpi ${t.active ? "active" : ""}" ${t.still ? "" : `role="button" tabindex="0" data-sv-tile="${t.key}" `}style="--k:${t.color};${t.still ? "cursor:default" : ""}">
+      <div class="mv-kpi-label">${esc(t.label)}</div>
+      <div class="mv-kpi-value">${typeof t.value === "number" ? fmtInt(t.value) : esc(t.value)}</div>
+      <div class="mv-kpi-sub">${esc(t.sub)}</div>
+    </div>`).join("");
+
+  const filtered = w.stage !== "all" || w.aged;
+  svEl("svFilterNote").hidden = !filtered;
+  svEl("svFilterText").textContent = w.aged ? `Showing only physical units aged ${SV_AGED_DAYS}+ days`
+    : `Showing only ${w.stage === "Physical" ? "physical" : "in-transit"} units`;
+
+  // ---- table ----
+  svEl("svTableHead").innerHTML = `<tr>${SV_COLS.map(c =>
+    `<th class="${c.num ? "num" : ""}">${esc(c.label)}</th>`).join("")}</tr>`;
+  svEl("svTableBody").innerHTML = rows.length ? rows.map(r => `
+    <tr>
+      ${SV_COLS.map(c => {
+        if (c.key === "tat") return `<td class="num">${svTatPill(r.tat)}</td>`;
+        if (c.key === "fuel") return `<td>${r.fuel ? `<span class="mv-fuel">${esc(r.fuel)}</span>` : "—"}</td>`;
+        if (c.key === "stage") return `<td>${badge(r.stage === "Physical" ? "Physical" : "In Transit", r.stage === "Physical" ? "amber" : "blue")}</td>`;
+        return `<td class="${c.cls || ""}">${dash(r[c.key])}</td>`;
+      }).join("")}
+    </tr>`).join("")
+    : `<tr><td colspan="${SV_COLS.length}" class="empty-cell">No vehicles for this selection.</td></tr>`;
+  svEl("svTableCount").textContent = `(${fmtInt(rows.length)} unit${rows.length === 1 ? "" : "s"})`;
+}
+
+function exportStockWindow() {
+  const rows = svVisibleRows();
+  if (!rows.length) return;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [SV_COLS.map(c => q(c.label)).join(",")];
+  rows.forEach(r => lines.push(SV_COLS.map(c => q(r[c.key])).join(",")));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const w = svState.win;
+  const part = ["vehicle_stock", w.label || "all", w.model, w.aged ? "aged" : (w.stage !== "all" ? w.stage : "")].filter(Boolean).join("_");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${part.replace(/[^\w\-]+/g, "_")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+(function initStockWindow() {
+  const wire = () => {
+    const fromRow = (row) => openStockWindow({ dim: row.dataset.svDim, label: row.dataset.svLabel, model: row.dataset.svModel || "" });
+    document.addEventListener("click", (e) => {
+      if (e.target.closest(".inv-expand-btn")) return;                        // the chevron only expands the colour row
+      const row = e.target.closest("#invBreakdownBody tr.sv-row");
+      if (row) { fromRow(row); return; }
+      const card = e.target.closest("#invKpiGrid .kpi-card[data-sv-card]");
+      if (card) { openStockWindow(JSON.parse(card.dataset.svCard)); return; }
+      const tile = e.target.closest("#svKpis [data-sv-tile]");
+      if (tile) {
+        const t = tile.dataset.svTile, w = svState.win;
+        if (t === "all") { w.stage = "all"; w.aged = false; }
+        else if (t === "aged") { w.aged = !w.aged; w.stage = w.aged ? "Physical" : "all"; }
+        else { w.aged = false; w.stage = (w.stage === t) ? "all" : t; }
+        renderStockWindow(); return;
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (svState.open && e.key === "Escape") { closeStockWindow(); return; }
+      if ((e.key === "Enter" || e.key === " ") && e.target.matches) {
+        if (e.target.matches("#invBreakdownBody tr.sv-row")) { e.preventDefault(); fromRow(e.target); }
+        else if (e.target.matches("#invKpiGrid .kpi-card[data-sv-card]")) { e.preventDefault(); openStockWindow(JSON.parse(e.target.dataset.svCard)); }
+        else if (e.target.matches("#svKpis [data-sv-tile]")) { e.preventDefault(); e.target.click(); }
+      }
+    });
+    svEl("svClose").addEventListener("click", closeStockWindow);
+    svEl("svModal").addEventListener("click", (e) => { if (e.target === svEl("svModal")) closeStockWindow(); });
+    svEl("svExport").addEventListener("click", exportStockWindow);
+    svEl("svClear").addEventListener("click", () => { svState.win.stage = "all"; svState.win.aged = false; renderStockWindow(); });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
+  else wire();
+})();
 
 /* ---------------------------------------------------------------------- */
 /* Enquiry Wise Stock page (Physical vs In Transit)                         */
@@ -1526,19 +2263,21 @@ function renderInventoryBreakdownTable(data, activeDim) {
     body.innerHTML = rows.map((r, i) => {
       const models = r.models || [];
       const parentRow = `
-        <tr class="inv-color-row" data-color-idx="${i}">
+        <tr class="inv-color-row sv-row" tabindex="0" data-color-idx="${i}" data-sv-dim="color" data-sv-label="${esc(r.label)}"
+            title="Click the row to see every vehicle in ${esc(r.label)}">
           <td>
             <button type="button" class="inv-expand-btn" aria-expanded="false" data-color-idx="${i}"
-                    title="Show models in this colour">
+                    title="Show models in this colour" aria-label="Show models in ${esc(r.label)}">
               <span class="inv-chevron" aria-hidden="true">▸</span>
-              <span>${esc(r.label)}</span>
-              <span class="inv-model-count">${models.length} model${models.length === 1 ? "" : "s"}</span>
             </button>
+            <span class="sv-name">${esc(r.label)}</span>
+            <span class="inv-model-count">${models.length} model${models.length === 1 ? "" : "s"}</span>
           </td>
           ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
         </tr>`;
       const modelRows = models.map(m => `
-        <tr class="inv-sub-row" data-parent-idx="${i}" hidden>
+        <tr class="inv-sub-row sv-row" tabindex="0" data-parent-idx="${i}" data-sv-dim="color" data-sv-label="${esc(r.label)}"
+            data-sv-model="${esc(m.label)}" title="Click to see ${esc(m.label)} in ${esc(r.label)}" hidden>
           <td><span class="inv-sub-label">${esc(m.label)}</span></td>
           ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(m[c.key])}</td>`).join("")}
         </tr>`).join("");
@@ -1548,7 +2287,8 @@ function renderInventoryBreakdownTable(data, activeDim) {
   }
 
   body.innerHTML = rows.map(r => `
-    <tr>
+    <tr class="sv-row" tabindex="0" data-sv-dim="${activeDim}" data-sv-label="${esc(r.label)}"
+        title="Click to see every vehicle in ${esc(r.label)}">
       <td>${esc(r.label)}</td>
       ${INV_BREAKDOWN_COLUMNS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("")}
     </tr>
@@ -1587,7 +2327,7 @@ async function loadVehicleStock() {
     { label: "Physical stock", value: fmtInt(kpis.physical_count), color: "var(--amber)", sub: "on the ground now" },
     { label: "In transit", value: fmtInt(kpis.transit_count), color: "var(--purple)", sub: "despatched, not yet arrived" },
     { label: "Physical stock value", value: fmtMoney(kpis.physical_value), color: "var(--green)", sub: "HMIL invoice value" },
-    { label: "Avg. stock age", value: `${kpis.avg_stock_age_days} days`, color: "var(--blue)", sub: "physical stock only" },
+    { label: "Avg. stock age", value: `${kpis.avg_stock_age_days} days`, color: "var(--blue)", sub: "days since HMI invoice · physical stock only" },
     { label: "Aged 60+ days", value: fmtInt(kpis.aged_60_plus), color: "var(--red)",
       sub: `${fmtPct(kpis.aged_60_plus_rate)} of physical stock` },
     { label: "Physical basic price", value: fmtMoney(kpis.physical_basic_price), color: "var(--green)",
@@ -1597,6 +2337,8 @@ async function loadVehicleStock() {
     { label: "Total basic price", value: fmtMoney(kpis.total_basic_price), color: "var(--blue)",
       sub: `${fmtInt(kpis.total_basic_count)} units · physical + in transit` },
   ]);
+
+  svTagKpiCards();
 
   const stage = analytics.stage_split || { Physical: 0, Transit: 0 };
   doughnutChart("invStageChart", ["Physical", "Transit"], [stage.Physical, stage.Transit],
@@ -1668,6 +2410,8 @@ async function showSection(name, { force = false } = {}) {
 }
 
 async function reloadAllLoadedSections() {
+  mvCache.clear();                      // detail-window data may be stale after a Refresh / upload
+  state.filterOptions = null;           // new consultants / models / enquiry dates may have arrived
   const loaded = Array.from(state.loadedSections);
   state.loadedSections.clear();
   const active = document.querySelector(".nav-link.active")?.dataset.section || "overview";
@@ -1687,7 +2431,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V7`;
+  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V11`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
@@ -1817,12 +2561,21 @@ async function boot() {
   // Follow-up page: extra date field + list tabs
   attachFilterBar("fu", loadFollowup, {
     extraFields: [],
-    onReset: () => { document.getElementById("fuDate").value = todayISO(); setFollowupScope("today"); },
+    onReset: () => {
+      document.getElementById("fuFrom").value = todayISO();
+      document.getElementById("fuTo").value = todayISO();
+      setFollowupScope("today");
+    },
   });
-  document.getElementById("fuDate").addEventListener("change", () => {
+  const onFuDateChange = (which) => () => {
+    const fromEl = document.getElementById("fuFrom"), toEl = document.getElementById("fuTo");
+    if (which === "from" && toEl.value && toEl.value < fromEl.value) toEl.value = fromEl.value;   // keep From <= To
+    if (which === "to" && fromEl.value && fromEl.value > toEl.value) fromEl.value = toEl.value;
     if (fuState.scope === "date") setFollowupScope("today");
     loadFollowup();
-  });
+  };
+  document.getElementById("fuFrom").addEventListener("change", onFuDateChange("from"));
+  document.getElementById("fuTo").addEventListener("change", onFuDateChange("to"));
   document.getElementById("fuScopeTabs").addEventListener("click", (e) => {
     const btn = e.target.closest(".tab-btn");
     if (!btn) return;
