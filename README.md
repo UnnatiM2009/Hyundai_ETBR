@@ -296,3 +296,59 @@ Render watches the GitHub repo and redeploys automatically on every push to `mai
 - **Render: dashboard asks for a password I didn't set** — someone (maybe a past you)
   set `DASHBOARD_USER` / `DASHBOARD_PASSWORD` in the Environment tab; edit or remove
   them there to change or disable the login.
+
+## V12 changes
+
+**Enquiry Follow-up page - "Booked enquiries by number of follow-ups"**
+- 4 cards: Booked with 0 / 1 / 2 / 3 follow-ups (4+ is shown in the table and under the 3rd card).
+- One table with Model wise / Consultant wise / Colour wise tabs.
+- Click a card, a row, or a number to open a pop-up window with the full customer details
+  (no charts) - click the tiles inside the pop-up to switch follow-up group, Export to CSV.
+- Endpoint: `GET /api/followup/booked`  (code: `compute_booked_followups` in `data_processor.py`).
+- The Enquiry sheet has no follow-up history, so the count is *estimated* from the enquiry -> booking gap
+  (`FOLLOWUP_CADENCE_DAYS = 7` in `data_processor.py`). If you add a column such as **Follow up Count**
+  to the Enquiry sheet, it is picked up automatically and the real number is used.
+
+**Vehicle Stock - Avg. stock age fix**
+- The workbook's `Stock Age` column counts from the plant *Sign Off Date* (it equals `Sign Age`), but the page
+  says "Days since HMI invoice". Age is now worked out live as today - HMI Invoice Date
+  (`stock_age_days()` in `stock_engine.py`; set `STOCK_AGE_BASIS = "file"` there to go back to the old way).
+- Affects the Vehicle Stock page only (Avg. stock age, Aged 60+, Stock ageing chart, avg age in the tables).
+
+**Follow-up table (latest):** the first number column is *Total enquiries* (all statuses, all months) per
+Model / Consultant / Colour; the 0 / 1 / 2 / 3 / 4+ columns place EVERY enquiry in a follow-up group, so each row
+adds up to its total. The 4 cards at the top count only the booked enquiries. Follow-ups are estimated (one per
+`FOLLOWUP_CADENCE_DAYS` = 7 days from the enquiry date to the booking / retail / cancel date, or to the page date
+if still open; a Lead = 0) unless the Enquiry sheet has a "Follow up Count" column, which is then used as-is.
+
+**Life cycle (follow-up page):** Enquiry -> Booked (Booking Date filled) -> Retailed (Retail date filled = closed).
+"Booked" = reached the booking stage and not cancelled, so vehicles that were booked and then retailed still count
+(`BOOKED_EXCLUDES_CANCELLED` in `data_processor.py`). Follow-ups are counted up to the booking date (or cancel date, or
+today while still open). The popup shows Stage, Booking date, Retail date and a Follow-up history timeline per enquiry.
+
+## V13 changes
+
+**Enquiry Follow-up - From / To date**
+- The single "Follow-up date (today)" box is now **Follow-up from date** and **Follow-up to date** (both default to today;
+  the To date can never be before the From date). API: `from_date` / `to_date` on `/api/followup` and `/api/followup/list`
+  (the old `as_of` still works and means from = to = that day).
+- Due = follow-ups dated from..to | Previous days pending = dated before the From date | Upcoming = dated after the To date.
+  With From = To the numbers are exactly the same as before. Labels switch to "Due in selected dates" for a range.
+
+**Vehicle Stock - unit-by-unit pop-up**
+- Click a Model / Variant / Colour row (or a model under a colour, or the Total stock / Physical / In transit / Aged 60+ cards).
+- Columns: HMI Invoice No, HMI Invoice Date, TAT (days since HMI invoice, as on today), Model, Variant, Exterior Color Name,
+  Interior Color Desc, Vin Number, Order No, Stock Status, Fuel Type, Order Type (+ Stage). Click a heading to sort; Export to CSV.
+- Endpoint: `GET /api/vehicle-stock/units` (`compute_vehicle_stock_units` in `data_processor.py`).
+
+## V14 changes
+
+**Enquiry page - "Enquiry date" filter** replaces "Enquiry aging days". It lists the dates (with enquiries) of the
+selected Month and is rebuilt whenever the Month changes (back to "All dates" if the chosen date is not in that month).
+It filters the KPI cards, charts and the Model / Consultant / Source tables. Backend: `age=date:YYYY-MM-DD`
+(`_age_mask` in `data_processor.py`); the date list comes from `/api/filters` -> `enquiry_dates`.
+The filter options are now re-read after Refresh / Update monthly data, so new months, consultants and dates appear at once.
+
+**V15 - Follow-up page:** the separate "Cancels in month" dropdown is removed. The two cancel cards and the
+"Cancelled enquiries" list now count enquiries whose Lost Date falls between the From and To dates, so every number on
+the page follows the same dates (`_cancel_view` in `data_processor.py`).

@@ -202,7 +202,13 @@ def _canon(series: pd.Series) -> pd.Series:
 
 
 def _age_mask(df: pd.DataFrame, age: Optional[str]) -> pd.Series:
-    """age = 'all' | a bucket value ('8-15') | 'd:12' (exactly 12 days)."""
+    """age = 'all' | a bucket value ('8-15') | 'd:12' (exactly 12 days)
+            | 'date:2026-10-02' (enquiries created on exactly that Enquiry Date)."""
+    if age.startswith("date:"):
+        try:
+            return df["Enquiry Date"].dt.normalize() == pd.Timestamp(age[5:]).normalize()
+        except Exception:
+            return pd.Series(True, index=df.index)
     col = df["enquiry aging days"]
     if age.startswith("d:"):
         try:
@@ -422,10 +428,16 @@ class DashboardData:
         clean = lambda vals: sorted(v for v in vals if v and v.lower() not in ("nan", "none", "", "unknown"))
         ages = {"buckets": [{"value": v, "label": l} for v, l, _lo, _hi in AGE_BUCKETS], "days": []}
         if e.empty:
-            return {"models": [], "consultants": [], "sources": [], "ages": ages}
+            return {"models": [], "consultants": [], "sources": [], "ages": ages, "enquiry_dates": {}}
         ages["days"] = sorted(int(x) for x in e["enquiry aging days"].dropna().unique())
+        # every Enquiry Date that has enquiries, grouped by month - feeds the Enquiry page's date dropdown
+        ed = e["Enquiry Date"].dropna().dt.normalize().drop_duplicates().sort_values()
+        enquiry_dates: dict = {}
+        for d in ed:
+            enquiry_dates.setdefault(d.strftime("%Y-%m"), []).append(d.strftime("%Y-%m-%d"))
         return {
             "ages": ages,
+            "enquiry_dates": enquiry_dates,
             "models": clean(set(e["Model"].dropna().astype(str).str.strip())),
             "consultants": clean(set(e["Consultant Name"].dropna().astype(str).str.strip())),
             "sources": clean(set(e["Source"].dropna().astype(str).str.strip())),
@@ -1136,6 +1148,76 @@ def compute_model_variant_detail(model: str, period: Optional[str], consultant: 
     }
 
 
+def compute_model_variant_records(model: str, period: Optional[str], consultant: Optional[str] = None,
+                                  source: Optional[str] = None, age: Optional[str] = None,
+                                  dim: str = "model") -> dict:
+    """Compact record set behind the detail window.
+
+    The window used to ask the server for a fresh calculation on every click.  Instead the
+    browser now downloads this small data set ONCE (about 700 short rows) and does all the
+    filtering / counting itself, so clicking a bar, a slice or the Model dropdown is instant.
+
+    The rows are the same Enquiry / Booked / Retail views the rest of the dashboard uses
+    (each counted in its own month, honouring the page's Month / Consultant / Source / age
+    filters).  The *model* is deliberately NOT filtered here - the window filters it live.
+    Variant labels are prepared exactly as in compute_model_variant_detail().
+    """
+    if dim == "consultant":
+        q_cons, q_src = model, source
+    elif dim == "source":
+        q_cons, q_src = consultant, model
+    else:
+        dim = "model"
+        q_cons, q_src = consultant, source
+    multi_model = dim != "model"
+
+    parts = []
+    for kind in ("enquiry", "booked", "retail"):
+        df = store.view(kind, period, None, q_cons, q_src, age=age)
+        if df.empty:
+            continue
+        var = df["Variant"].map(_text).replace("", VARIANT_BLANK)
+        if multi_model:
+            blank = var == VARIANT_BLANK
+            var = var.where(~blank, VARIANT_BLANK + " (" + df["Model"].map(_text) + ")")
+        parts.append(pd.DataFrame({
+            "k": kind,
+            "v": var.values,
+            "m": df["Model"].map(_text).values,
+            "f": df["Fuel type"].map(_text).values,
+            "a": df["enquiry aging days"].astype(float).values,
+            "t": (df["Test Drive"] == "Y").astype(int).values,
+            "l": df["is_lost"].astype(int).values,
+            # extra detail used by the "Waiting for delivery" list (status Booked rows only use these)
+            "c": df["Name of the Customer"].map(_text).values,
+            "col": df["Color"].map(_text).values,
+            "cn": df["Consultant Name"].map(_text).values,
+            "bd": df["Booking Date"].dt.strftime("%Y-%m-%d").fillna("").values,
+        }))
+
+    empty = {"enq": [], "book": [], "retail": []}
+    vocab = {"variants": [], "models": [], "fuels": []}
+    if parts:
+        allr = pd.concat(parts, ignore_index=True)
+        codes = {}
+        for col, name in (("v", "variants"), ("m", "models"), ("f", "fuels")):
+            c, uniq = pd.factorize(allr[col])
+            codes[col] = c
+            vocab[name] = [str(u) for u in uniq]
+        allr["v"], allr["m"], allr["f"] = codes["v"], codes["m"], codes["f"]
+        for kind, key in (("enquiry", "enq"), ("booked", "book"), ("retail", "retail")):
+            sub = allr[allr["k"] == kind]
+            cols = ["v", "m", "f", "a"] + (["t", "l"] if kind == "enquiry" else (["c", "col", "cn", "bd"] if kind == "booked" else []))
+            empty[key] = sub[cols].values.tolist()
+
+    return {
+        "dim": dim, "model": model, "period": period,
+        "period_label": _month_label(period) if period else "All time",
+        "age_buckets": [[v, l, lo, hi] for v, l, lo, hi in AGE_BUCKETS],
+        "vocab": vocab, **empty,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Enquiry Follow-up page
 #   day-wise follow-ups, pending from previous days, date-wise schedule, and
@@ -1152,6 +1234,41 @@ def _as_of(as_of: Optional[str]) -> pd.Timestamp:
     return pd.Timestamp(dt.date.today())
 
 
+def _range(as_of: Optional[str], from_date: Optional[str], to_date: Optional[str]) -> tuple:
+    """(from, to) the follow-up page measures against. Either end may be missing: a missing end takes
+    the other, and if both are missing it is today. A reversed range is swapped. With from == to this
+    is exactly the old single 'today' date."""
+    def one(v):
+        try:
+            return pd.Timestamp(v).normalize() if v else None
+        except Exception:
+            return None
+    lo, hi = one(from_date), one(to_date)
+    if lo is None and hi is None:
+        lo = hi = _as_of(as_of)
+    elif lo is None:
+        lo = hi
+    elif hi is None:
+        hi = lo
+    if hi < lo:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def _cancel_view(kind: str, period: Optional[str], model, consultant, source,
+                 lo: pd.Timestamp, hi: pd.Timestamp, use_range: bool) -> pd.DataFrame:
+    """Cancelled enquiries for the follow-up page. With a From / To range they are the ones whose Lost Date
+    falls between the two dates (so the cancel numbers always match the dates on the page); without a
+    range (old callers) they are counted by month as before."""
+    if not use_range:
+        return store.view(kind, period, model, consultant, source)
+    df = store.view(kind, None, model, consultant, source)
+    if df.empty:
+        return df
+    ld = df["Lost Date"].dt.normalize()
+    return df[(ld >= lo) & (ld <= hi)]
+
+
 def _followup_base(model, consultant, source) -> pd.DataFrame:
     """Open follow-ups: rows whose status is still 'Enquiry Follow up' - every month."""
     df = store.enquiry
@@ -1160,25 +1277,29 @@ def _followup_base(model, consultant, source) -> pd.DataFrame:
     return store._filter(df[df["is_followup"]], None, model, consultant, source)
 
 
-def _kind_for(date: pd.Timestamp, ref: pd.Timestamp) -> str:
-    return "pending" if date < ref else ("today" if date == ref else "upcoming")
+def _kind_for(date: pd.Timestamp, ref: pd.Timestamp, hi: Optional[pd.Timestamp] = None) -> str:
+    """pending = before the From date | today = from the From date to the To date | upcoming = after it."""
+    hi = ref if hi is None else hi
+    return "pending" if date < ref else ("today" if date <= hi else "upcoming")
 
 
 def compute_followup(as_of: Optional[str], period: Optional[str], model: Optional[str] = None,
                      consultant: Optional[str] = None, source: Optional[str] = None,
-                     window_days: int = 14) -> dict:
-    ref = _as_of(as_of)
+                     window_days: int = 14, from_date: Optional[str] = None,
+                     to_date: Optional[str] = None) -> dict:
+    ref, hi = _range(as_of, from_date, to_date)          # ref = From date, hi = To date
+    use_range = bool(from_date or to_date)
     fu = _followup_base(model, consultant, source)
     nd = fu["Next Followup Date"] if not fu.empty else pd.Series(dtype="datetime64[ns]")
 
-    today_df = fu[nd == ref] if not fu.empty else fu
-    pending = fu[nd < ref] if not fu.empty else fu
-    upcoming = fu[nd > ref] if not fu.empty else fu
-    next7 = upcoming[upcoming["Next Followup Date"] <= ref + pd.Timedelta(days=7)] if not upcoming.empty else upcoming
+    today_df = fu[(nd >= ref) & (nd <= hi)] if not fu.empty else fu     # due between From and To
+    pending = fu[nd < ref] if not fu.empty else fu                      # before the From date, still open
+    upcoming = fu[nd > hi] if not fu.empty else fu                      # after the To date
+    next7 = upcoming[upcoming["Next Followup Date"] <= hi + pd.Timedelta(days=7)] if not upcoming.empty else upcoming
     no_date = fu[nd.isna()] if not fu.empty else fu
 
-    f_cancel = store.view("followup_cancel", period, model, consultant, source)
-    a_cancel = store.view("appointed_cancel", period, model, consultant, source)
+    f_cancel = _cancel_view("followup_cancel", period, model, consultant, source, ref, hi, use_range)
+    a_cancel = _cancel_view("appointed_cancel", period, model, consultant, source, ref, hi, use_range)
 
     kpis = {
         "open_followups": int(len(fu)),
@@ -1196,18 +1317,18 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
     if not fu.empty:
         dated = fu["Next Followup Date"].dropna()
         counts = dated.groupby(dated).size().to_dict()
-    start, end = ref - pd.Timedelta(days=window_days), ref + pd.Timedelta(days=window_days)
+    start, end = ref - pd.Timedelta(days=window_days), hi + pd.Timedelta(days=window_days)
     chart = []
     d = start
     while d <= end:
-        chart.append({"date": d.strftime("%Y-%m-%d"), "value": int(counts.get(d, 0)), "kind": _kind_for(d, ref)})
+        chart.append({"date": d.strftime("%Y-%m-%d"), "value": int(counts.get(d, 0)), "kind": _kind_for(d, ref, hi)})
         d += pd.Timedelta(days=1)
     older_pending = int(sum(v for k, v in counts.items() if k < start))
     later_upcoming = int(sum(v for k, v in counts.items() if k > end))
 
     # ---- full date-wise schedule (every date that has follow-ups) ----
     date_table = [
-        {"date": k.strftime("%Y-%m-%d"), "weekday": k.strftime("%a"), "value": int(v), "kind": _kind_for(k, ref),
+        {"date": k.strftime("%Y-%m-%d"), "weekday": k.strftime("%a"), "value": int(v), "kind": _kind_for(k, ref, hi),
          "days_from_ref": int((k - ref).days)}
         for k, v in sorted(counts.items())
     ]
@@ -1231,8 +1352,8 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
             consultant_rows.append({
                 "label": name,
                 "pending_previous": int((s_nd < ref).sum()),
-                "due_today": int((s_nd == ref).sum()),
-                "upcoming": int((s_nd > ref).sum()),
+                "due_today": int(((s_nd >= ref) & (s_nd <= hi)).sum()),
+                "upcoming": int((s_nd > hi).sum()),
                 "total": int(len(sub)),
             })
         consultant_rows.sort(key=lambda r: (r["pending_previous"], r["due_today"], r["total"]), reverse=True)
@@ -1240,6 +1361,9 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
     return {
         "as_of": ref.strftime("%Y-%m-%d"),
         "as_of_label": ref.strftime("%d %b %Y"),
+        "from": ref.strftime("%Y-%m-%d"), "to": hi.strftime("%Y-%m-%d"),
+        "is_range": bool(hi != ref),
+        "cancel_basis": "dates" if use_range else "month",
         "kpis": kpis,
         "chart": chart,
         "older_pending": older_pending,
@@ -1253,16 +1377,18 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
 
 def compute_followup_list(scope: str, as_of: Optional[str], date: Optional[str], period: Optional[str],
                           model: Optional[str] = None, consultant: Optional[str] = None,
-                          source: Optional[str] = None, limit: int = 1000) -> dict:
+                          source: Optional[str] = None, limit: int = 1000,
+                          from_date: Optional[str] = None, to_date: Optional[str] = None) -> dict:
     """The customer rows behind a follow-up number.
 
-    scope: today | pending | upcoming | all | date | followup_cancel | appointed_cancel
+    scope: today (= due between the From and To dates) | pending (before From) | upcoming (after To)
+           | all | date | followup_cancel | appointed_cancel
     """
-    ref = _as_of(as_of)
+    ref, hi = _range(as_of, from_date, to_date)
     cancel_scopes = {"followup_cancel", "appointed_cancel"}
 
     if scope in cancel_scopes:
-        df = store.view(scope, period, model, consultant, source)
+        df = _cancel_view(scope, period, model, consultant, source, ref, hi, bool(from_date or to_date))
         if not df.empty:
             df = df.sort_values("Lost Date", ascending=False, na_position="last")
     else:
@@ -1270,11 +1396,11 @@ def compute_followup_list(scope: str, as_of: Optional[str], date: Optional[str],
         if not df.empty:
             nd = df["Next Followup Date"]
             if scope == "today":
-                df = df[nd == ref].sort_values(["Consultant Name", "Name of the Customer"])
+                df = df[(nd >= ref) & (nd <= hi)].sort_values(["Next Followup Date", "Consultant Name", "Name of the Customer"])
             elif scope == "pending":
                 df = df[nd < ref].sort_values("Next Followup Date")           # most overdue first
             elif scope == "upcoming":
-                df = df[nd > ref].sort_values("Next Followup Date")
+                df = df[nd > hi].sort_values("Next Followup Date")
             elif scope == "date":
                 try:
                     day = pd.Timestamp(date).normalize()
@@ -1310,6 +1436,183 @@ def compute_followup_list(scope: str, as_of: Optional[str], date: Optional[str],
         })
     return {"scope": scope, "as_of": ref.strftime("%Y-%m-%d"), "total": total,
             "shown": len(rows), "rows": rows}
+
+
+# --------------------------------------------------------------------------- #
+# Enquiry Follow-up page - "Booked enquiries by number of follow-ups"
+#
+#   0 / 1 / 2 / 3 follow-up cards + Model / Consultant / Colour-wise table, and the full
+#   customer list behind every number (opened in a pop-up window on the page).
+#
+#   HOW THE FOLLOW-UP COUNT IS WORKED OUT (for EVERY enquiry)
+#   The Enquiry workbook keeps only ONE remark and ONE next-follow-up date per enquiry - it does
+#   not keep the follow-up history. So:
+#     1. If the workbook has a follow-up count column (any heading in FOLLOWUP_COUNT_HEADINGS),
+#        that real number is used for every enquiry.
+#     2. Otherwise the count is ESTIMATED from how long the enquiry has been running, one follow-up
+#        for every FOLLOWUP_CADENCE_DAYS days (rounded up):
+#            days = (end date - Enquiry Date), where end date is the Booking Date, else the Retail
+#                   Date, else the Lost Date (cancelled), else "today" (still open)
+#            0 days -> 0 follow-ups | 1-7 days -> 1 | 8-14 -> 2 | 15-21 -> 3 | 22+ -> 4 or more
+#            a "Lead" (new, not yet followed up) is always 0.
+#        Change FOLLOWUP_CADENCE_DAYS to suit how often your team really follows up.
+# --------------------------------------------------------------------------- #
+
+FOLLOWUP_CADENCE_DAYS = 7
+FOLLOWUP_COUNT_HEADINGS = {_skey(h) for h in (
+    "Follow up Count", "Followup Count", "Follow-up Count", "No of Follow ups", "No. of Follow ups",
+    "Number of Follow ups", "Total Follow ups", "Follow ups Done", "Follow up Done", "Followups",
+    "Follow ups", "Follow Up Counts",
+)}
+# The column shown as "Enquiry No." (first column) in the follow-up pop-up. "Customer ID" is the DMS
+# enquiry reference; use "S NO" instead if you prefer the serial number of the export.
+ENQUIRY_NO_COLUMN = "Customer ID"
+
+# Life cycle of an enquiry:  Enquiry -> Booked (Booking Date filled) -> Retailed (Retail date filled = closed).
+# "Booked" on the follow-up page means the enquiry REACHED the booking stage, so vehicles that were
+# booked and have since been retailed still count as booked. Cancelled enquiries (any status that
+# contains "cancel") are left out; set this to False to count a cancelled booking as booked too.
+BOOKED_EXCLUDES_CANCELLED = True
+HISTORY_MAX_DATES = 8
+FOLLOWUP_BUCKETS = (0, 1, 2, 3, 4)          # 4 means "4 or more"
+NOT_SPECIFIED = "Not specified"
+
+
+def _followup_end(df: pd.DataFrame, ref: pd.Timestamp) -> pd.Series:
+    """The date an enquiry's follow-ups stop: the booking, else retail, else cancel date, else today."""
+    return df["Booking Date"].fillna(df["Retail date"]).fillna(df["Lost Date"]).fillna(ref)
+
+
+def _reached_booking(df: pd.DataFrame) -> pd.Series:
+    """True once the enquiry has a Booking Date (or is Booked / Retail) - and is not cancelled."""
+    r = df["Booking Date"].notna() | df["is_booked"] | df["is_retail"]
+    return r & ~df["is_lost"] if BOOKED_EXCLUDES_CANCELLED else r
+
+
+def _stage_of(row) -> str:
+    if row["is_lost"]:
+        return "Cancelled"
+    if pd.notna(row["Retail date"]) or row["is_retail"]:
+        return "Retailed · Closed"
+    if row["_reached"]:
+        return "Booked"
+    if row["is_appointed"]:
+        return "Appointed"
+    if row["Status Key"] == _skey("Lead"):
+        return "Lead"
+    return "In follow-up"
+
+
+def _followup_count_series(df: pd.DataFrame, ref: Optional[pd.Timestamp] = None) -> tuple:
+    """(follow-ups per enquiry as a float Series, basis, source column name)."""
+    col = next((c for c in df.columns if _skey(c) in FOLLOWUP_COUNT_HEADINGS), None)
+    if col is not None:
+        n = pd.to_numeric(df[col], errors="coerce").clip(lower=0)
+        return n, "column", str(col)
+    ref = ref if ref is not None else pd.Timestamp(dt.date.today())
+    end = _followup_end(df, ref)
+    days = (end - df["Enquiry Date"]).dt.days.clip(lower=0)
+    n = np.ceil(days / FOLLOWUP_CADENCE_DAYS)
+    n = n.where(~df["Status Key"].eq(_skey("Lead")), 0.0)            # a new lead has not been followed up yet
+    return n, "estimated", None
+
+
+def _bucket_of(n) -> Optional[int]:
+    if n is None or pd.isna(n):
+        return None
+    return int(min(int(n), FOLLOWUP_BUCKETS[-1]))
+
+
+def compute_booked_followups(model: Optional[str] = None, consultant: Optional[str] = None,
+                             source: Optional[str] = None, as_of: Optional[str] = None) -> dict:
+    """Every enquiry placed in a follow-up group (0 / 1 / 2 / 3 / 4+), so the groups add up to the
+    total enquiries. `c0..c4` = all enquiries by follow-ups; `b0..b4` = only the BOOKED ones (the cards).
+
+    Honours the page's Model / Consultant / Source filters; all months, all statuses."""
+    zero = {"enquiries": 0, "booked": 0, "retailed": 0, "unknown": 0,
+            **{f"c{k}": 0 for k in FOLLOWUP_BUCKETS}, **{f"b{k}": 0 for k in FOLLOWUP_BUCKETS}}
+    out = {"basis": "estimated", "basis_column": None, "cadence_days": FOLLOWUP_CADENCE_DAYS,
+           "kpis": dict(zero), "by_model": [], "by_consultant": [], "by_color": [], "rows": []}
+    base = store.enquiry
+    if base.empty:
+        return out
+    allq = store._filter(base, None, model, consultant, source)          # every enquiry
+    if allq.empty:
+        return out
+
+    ref = _as_of(as_of)
+    counts, basis, col = _followup_count_series(allq, ref)
+    allq = allq.assign(_fu=counts.values, _end=_followup_end(allq, ref).values)
+    allq["_reached"] = _reached_booking(allq)
+    allq["_retailed"] = (allq["Retail date"].notna() | allq["is_retail"]) & ~allq["is_lost"]
+    allq["_bucket"] = allq["_fu"].map(_bucket_of)
+    out["basis"], out["basis_column"] = basis, col
+
+    def tally(sub: pd.DataFrame) -> dict:
+        b = sub["_bucket"]
+        bk = sub["_reached"]
+        d = {"enquiries": int(len(sub)), "booked": int(bk.sum()), "retailed": int(sub["_retailed"].sum()),
+             "unknown": int(b.isna().sum())}
+        for k in FOLLOWUP_BUCKETS:
+            d[f"c{k}"] = int((b == k).sum())
+            d[f"b{k}"] = int(((b == k) & bk).sum())
+        return d
+
+    out["kpis"] = tally(allq)
+
+    # Every consultant / model / colour in the workbook is listed.
+    def grouped(col_name: str, blank: str) -> list:
+        key = allq[col_name].map(_text).replace("", blank)
+        rows = [{"label": str(k), **tally(sub)} for k, sub in allq.groupby(key)]
+        rows = [r for r in rows if r["label"] != blank or r["enquiries"]]
+        rows.sort(key=lambda r: (-r["enquiries"], -r["booked"], r["label"].lower()))
+        return rows
+
+    out["by_model"] = grouped("Model", "Unknown")
+    out["by_consultant"] = grouped("Consultant Name", "Unassigned")
+    out["by_color"] = grouped("Color", NOT_SPECIFIED)
+
+    rows = []
+    ordered = allq.assign(_b=(~allq["_reached"]).astype(int)).sort_values(
+        ["_b", "Booking Date", "Enquiry Date", "Name of the Customer"],
+        ascending=[True, False, False, True], na_position="last")
+    for _, r in ordered.iterrows():
+        n = r["_fu"]
+        booked = bool(r["_reached"])
+        history = []
+        if basis == "estimated" and pd.notna(n) and pd.notna(r["Enquiry Date"]):
+            for i in range(1, min(int(n), HISTORY_MAX_DATES) + 1):
+                d_i = min(r["Enquiry Date"] + pd.Timedelta(days=FOLLOWUP_CADENCE_DAYS * i), r["_end"])
+                history.append(_fmt_date(d_i))
+        rows.append({
+            "customer_id": r["Customer ID"],
+            "enq_no": _text(r[ENQUIRY_NO_COLUMN]) if ENQUIRY_NO_COLUMN in allq.columns else _text(r["Customer ID"]),
+            "customer": r["Name of the Customer"],
+            "phone": r["Phone"],
+            "model": _text(r["Model"]) or "Unknown",
+            "variant": _text(r["Variant"]),
+            "color": _text(r["Color"]) or NOT_SPECIFIED,
+            "fuel": _text(r["Fuel type"]),
+            "consultant": _text(r["Consultant Name"]) or "Unassigned",
+            "source": _text(r["Source"]),
+            "status": _text(r["Enquiry Status"]),
+            "is_booked": booked,
+            "stage": _stage_of(r),
+            "enquiry_date": _fmt_date(r["Enquiry Date"]),
+            "booking_date": _fmt_date(r["Booking Date"]),
+            "retail_date": _fmt_date(r["Retail date"]),
+            "lost_date": _fmt_date(r["Lost Date"]),
+            "followups_until": _fmt_date(r["_end"]),
+            "history": history,
+            "days_to_book": None if pd.isna(r["booking_days"]) else int(r["booking_days"]),
+            "followups": None if pd.isna(n) else int(n),
+            "bucket": None if pd.isna(r["_bucket"]) else int(r["_bucket"]),
+            "test_drive": r["Test Drive"],
+            "next_followup": _fmt_date(r["Next Followup Date"]),
+            "remarks": r["Consultant Remarks"],
+        })
+    out["rows"] = rows
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1401,9 +1704,11 @@ def compute_vehicle_stock_kpis(model: Optional[str] = None, stage: Optional[str]
     transit = df[df["Stock Type"] == se.TRANSIT]
     physical_count = int(len(physical))
 
-    avg_age = float(physical["Age"].mean()) if physical_count else 0.0
-    aged_60 = int((physical["Age"] >= 60).sum()) if physical_count else 0
-    aged_90 = int((physical["Age"] >= 90).sum()) if physical_count else 0
+    # Age = days since the HMI invoice (see stock_engine.STOCK_AGE_BASIS), worked out as of today
+    ages = se.stock_age_days(physical) if physical_count else pd.Series(dtype=float)
+    avg_age = float(ages.mean()) if physical_count and ages.notna().any() else 0.0
+    aged_60 = int((ages >= 60).sum()) if physical_count else 0
+    aged_90 = int((ages >= 90).sum()) if physical_count else 0
 
     return {
         "total_stock": int(len(df)),
@@ -1449,7 +1754,7 @@ def compute_vehicle_stock_analytics(model: Optional[str] = None, stage: Optional
     if not physical.empty:
         labels = [b[2] for b in STOCK_AGE_BUCKETS]
         bins = [b[0] for b in STOCK_AGE_BUCKETS] + [STOCK_AGE_BUCKETS[-1][1]]
-        bucketed = pd.cut(physical["Age"], bins=bins, labels=labels)
+        bucketed = pd.cut(se.stock_age_days(physical), bins=bins, labels=labels)
         counts = bucketed.value_counts().reindex(labels)
         aging_buckets = [{"label": str(k), "value": int(v)} for k, v in counts.items()]
 
@@ -1467,10 +1772,41 @@ def compute_vehicle_stock_analytics(model: Optional[str] = None, stage: Optional
     }
 
 
+def compute_vehicle_stock_units(model: Optional[str] = None, stage: Optional[str] = None,
+                                fuel_type: Optional[str] = None, financier: Optional[str] = None) -> dict:
+    """Unit-by-unit stock list behind the Vehicle Stock pop-up (honours the page filters).
+    TAT = days from the HMI Invoice Date to today (falls back to the workbook's Stock Age when a unit
+    has no invoice date)."""
+    df = _filter_vehicle_stock(model, stage, fuel_type, financier)
+    rows = []
+    if not df.empty:
+        tat = se.stock_age_days(df)
+        for i, (_, r) in enumerate(df.iterrows()):
+            t = tat.iloc[i]
+            rows.append({
+                "inv_no": r.get("HMI Invoice No", ""),
+                "inv_date": _fmt_date(r.get("Invoice Date")),
+                "tat": None if pd.isna(t) else int(t),
+                "model": r["Model"],
+                "variant": r["Variant"],
+                "color": r["Color"],
+                "interior": r.get("Interior Color", ""),
+                "vin": r["Chassis"],
+                "order_no": r.get("Order No", ""),
+                "status": r.get("Stock Status", ""),
+                "fuel": r["Fuel Type"],
+                "order_type": r.get("Order Type", ""),
+                "stage": r["Stock Type"],
+            })
+        rows.sort(key=lambda x: (-(x["tat"] if x["tat"] is not None else -1), x["model"], x["variant"]))
+    return {"as_of": dt.date.today().strftime("%d/%m/%Y"), "total": len(rows), "rows": rows}
+
+
 def _vehicle_stock_group_row(label: str, sub: pd.DataFrame) -> dict:
     physical = sub[sub["Stock Type"] == se.PHYSICAL]
     transit = sub[sub["Stock Type"] == se.TRANSIT]
-    avg_age = float(physical["Age"].mean()) if len(physical) else 0.0
+    p_ages = se.stock_age_days(physical) if len(physical) else pd.Series(dtype=float)
+    avg_age = float(p_ages.mean()) if len(physical) and p_ages.notna().any() else 0.0
     value = float(physical["HMIL Invoice Amt"].sum())
     return {
         "label": label,

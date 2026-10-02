@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -30,6 +31,7 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 app = FastAPI(title="Hyundai ETBR Analysis API", version="1.0.0")
 
+app.add_middleware(GZipMiddleware, minimum_size=800)   # smaller downloads on slow / mobile networks
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -163,6 +165,25 @@ def api_model_variants(
                                            dim=dim, model_filter=model_filter)
 
 
+@app.get("/api/model-variants/records")
+def api_model_variants_records(
+    model: str = Query(...),
+    period: Optional[str] = Query(default="current_month"),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    age: Optional[str] = Query(default=None),
+    dim: Optional[str] = Query(default="model"),
+):
+    """One compact download that powers the whole detail window; the browser then filters
+    by variant / ageing / model instantly with no further server calls."""
+    if not model or model == "all":
+        raise HTTPException(400, "A specific value is required")
+    if dim not in ("model", "consultant", "source"):
+        raise HTTPException(400, "dim must be model, consultant or source")
+    return dp.compute_model_variant_records(model, _period_param(period), consultant=consultant,
+                                            source=source, age=age, dim=dim)
+
+
 @app.get("/api/test-drive")
 def api_test_drive(
     period: Optional[str] = Query(default="current_month"),
@@ -226,8 +247,11 @@ def api_followup(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    from_date: Optional[str] = Query(default=None, description="YYYY-MM-DD, start of the follow-up date range"),
+    to_date: Optional[str] = Query(default=None, description="YYYY-MM-DD, end of the follow-up date range"),
 ):
-    return dp.compute_followup(as_of, _period_param(period), model=model, consultant=consultant, source=source)
+    return dp.compute_followup(as_of, _period_param(period), model=model, consultant=consultant, source=source,
+                               from_date=from_date, to_date=to_date)
 
 
 @app.get("/api/followup/list")
@@ -239,11 +263,26 @@ def api_followup_list(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
 ):
     if scope not in ("today", "pending", "upcoming", "all", "date", "followup_cancel", "appointed_cancel"):
         raise HTTPException(400, f"Unknown scope '{scope}'")
     return dp.compute_followup_list(scope, as_of, date, _period_param(period),
-                                    model=model, consultant=consultant, source=source)
+                                    model=model, consultant=consultant, source=source,
+                                    from_date=from_date, to_date=to_date)
+
+
+@app.get("/api/followup/booked")
+def api_followup_booked(
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    as_of: Optional[str] = Query(default=None, description="YYYY-MM-DD; the 'today' for open enquiries"),
+):
+    """Every enquiry by number of follow-ups (0 / 1 / 2 / 3 / 4+) - the booked cards, the Model /
+    Consultant / Colour table and the full customer list for the pop-up."""
+    return dp.compute_booked_followups(model=model, consultant=consultant, source=source, as_of=as_of)
 
 
 @app.get("/api/enquiry-stock")
@@ -307,6 +346,17 @@ def api_vehicle_stock_breakdown(
     financier: Optional[str] = Query(default=None),
 ):
     return dp.compute_vehicle_stock_breakdown(model=model, stage=stage, fuel_type=fuel_type, financier=financier)
+
+
+@app.get("/api/vehicle-stock/units")
+def api_vehicle_stock_units(
+    model: Optional[str] = Query(default=None),
+    stage: Optional[str] = Query(default=None),
+    fuel_type: Optional[str] = Query(default=None),
+    financier: Optional[str] = Query(default=None),
+):
+    """Unit-level stock list (invoice no/date, TAT, model, variant, colours, VIN, order no ...) for the pop-up."""
+    return dp.compute_vehicle_stock_units(model=model, stage=stage, fuel_type=fuel_type, financier=financier)
 
 
 @app.post("/api/refresh")

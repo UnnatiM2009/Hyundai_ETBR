@@ -70,6 +70,13 @@ MODEL_ALIASES: dict = {}
 # Stock older than this many days is counted as "aged" on the page.
 AGED_DAYS = 90
 
+# How the Vehicle Stock page works out a unit's age:
+#   "invoice" -> days from the HMI Invoice Date to today (what the page says: "Days since HMI invoice")
+#   "file"    -> use the 'Stock Age' number exactly as it appears in the workbook
+# The DMS 'Stock Age' column counts from the plant Sign Off Date (it is identical to 'Sign Age'),
+# which is earlier than the invoice date, so it over-states how long the car has been the dealer's.
+STOCK_AGE_BASIS = "invoice"
+
 # Accepted column headings in the stock workbook (case-insensitive). The first
 # one found wins. Add your own spelling here if a column is not picked up.
 COLUMN_CANDIDATES = {
@@ -97,6 +104,7 @@ COLUMN_CANDIDATES = {
     "financier": ["Financier Name", "Financier", "DSA/Financier", "Finance Company"],
     "basic_price": ["Basic Price", "Basic Amount"],
     "invoice_amt": ["HMIL Invoice Amt", "HMI Invoice Amt", "Invoice Amount", "Invoice Price"],
+    "invoice_date": ["HMI Invoice Date", "HMIL Invoice Date", "Invoice Date", "Invoice Dt"],
 }
 
 # Words in the stock-type column that mean the unit is not yet at the dealership
@@ -244,6 +252,57 @@ def _read_stock_sheet(path: str):
     )
 
 
+def _parse_stock_date(series: pd.Series) -> pd.Series:
+    """dd/mm/yyyy text (or real Excel dates) -> datetime; blanks / junk -> NaT."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    out = pd.to_datetime(series, format="%d/%m/%Y", errors="coerce")
+    miss = out.isna() & series.notna()
+    if miss.any():
+        out.loc[miss] = pd.to_datetime(series[miss], dayfirst=True, errors="coerce")
+    return out
+
+
+def stock_age_days(df: pd.DataFrame, today=None) -> pd.Series:
+    """Age in days of every unit, worked out live (so it keeps growing as the days pass).
+    Uses the HMI Invoice Date when STOCK_AGE_BASIS == "invoice"; any unit without a usable
+    invoice date falls back to the workbook's own 'Stock Age' figure."""
+    file_age = pd.to_numeric(df["Age"], errors="coerce") if "Age" in df.columns \
+        else pd.Series(float("nan"), index=df.index)
+    if STOCK_AGE_BASIS != "invoice" or "Invoice Date" not in df.columns:
+        return file_age
+    ref = pd.Timestamp(today).normalize() if today is not None else pd.Timestamp.today().normalize()
+    live = (ref - pd.to_datetime(df["Invoice Date"], errors="coerce")).dt.days.clip(lower=0)
+    return live.where(live.notna(), file_age)
+
+
+def _exact_col(df: pd.DataFrame, names: tuple) -> Optional[str]:
+    """First column whose heading equals one of `names` (case-insensitive, exact - never a partial match)."""
+    lower = {str(c).strip().lower(): c for c in df.columns}
+    for n in names:
+        hit = lower.get(n.strip().lower())
+        if hit is not None:
+            return hit
+    return None
+
+
+def _id_text(v) -> str:
+    """Invoice / order numbers: '126925359' (never '126925359.0')."""
+    t = _clean_text(v)
+    return t[:-2] if t.endswith(".0") and t[:-2].isdigit() else t
+
+
+# Extra detail columns shown in the Vehicle Stock pop-up (all optional).
+DETAIL_COLUMNS = {
+    "HMI Invoice No": ("HMI Invoice No", "HMIL Invoice No", "HMI Invoice Number", "Invoice No", "Invoice No."),
+    "Interior Color": ("Interior Color Desc", "Interior Colour Desc", "Interior Color", "Interior Colour",
+                       "Interior Color Name", "Interior Colour Name"),
+    "Order No": ("Order No", "Order No.", "Order Number"),
+    "Stock Status": ("Stock Status", "Status of Stock"),
+    "Order Type": ("Order Type",),
+}
+
+
 def _find_col(df: pd.DataFrame, key: str, exclude: tuple = ()) -> Optional[str]:
     lower = {str(c).strip().lower(): c for c in df.columns if c not in exclude}
     for want in COLUMN_CANDIDATES[key]:
@@ -373,6 +432,7 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
     financier_c = _find_col(raw, "financier", exclude=used2)
     basic_price_c = _find_col(raw, "basic_price", exclude=used2)
     invoice_amt_c = _find_col(raw, "invoice_amt", exclude=used2 + ((basic_price_c,) if basic_price_c else ()))
+    invoice_date_c = _find_col(raw, "invoice_date", exclude=used2)
 
     warnings = []
     df = pd.DataFrame({
@@ -432,6 +492,10 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
     df["Alloc"] = [ALLOC if _is_allocated(i) else FREE for i in range(len(df))]
     df["Allocated To"] = raw[alloc_c].map(_clean_text) if alloc_c else ""
     df["Age"] = pd.to_numeric(raw[age_c], errors="coerce") if age_c else pd.Series([float("nan")] * len(df))
+    df["Invoice Date"] = _parse_stock_date(raw[invoice_date_c]) if invoice_date_c else pd.NaT
+    for out_name, names in DETAIL_COLUMNS.items():
+        c = _exact_col(raw, names)
+        df[out_name] = raw[c].map(_id_text) if c else ""
 
     df["MK"] = df["Model"].map(mkey)
     df["T"] = [toks(v, m) for v, m in zip(df["Variant"], df["Model"])]
@@ -452,6 +516,7 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
             "model": model_c, "variant": variant_c, "color": color_c, "chassis": chassis_c,
             "stock_type": type_c or (f"sheet name ({forced_type})" if forced_type else None), "age": age_c, "location": loc_c, "allocated": alloc_c,
             "fuel_type": fuel_c, "financier": financier_c, "basic_price": basic_price_c, "invoice_amt": invoice_amt_c,
+            "invoice_date": invoice_date_c,
         },
         "warnings": warnings,
         "has_color": bool(color_c),
