@@ -833,6 +833,7 @@ async function openModelWindow(prefix, model, dim = "model") {
   mvState.filters = readFilterBar(prefix);
   mvState.modelPick = null;
   mvEl("mvModelSelect").innerHTML = "";
+  renderMvMonthSelect();
   mvState.variants = new Set();
   mvState.ages = new Set();
   mvState.data = null;
@@ -1028,6 +1029,7 @@ function renderModelWindow(d) {
     </div>`).join("");
 
   renderMvModelSelect(d);
+  renderMvVariantSelect(d);
   renderMvVariantChart(d);
   renderMvAgeChart(d);
   renderMvTable(d);
@@ -1071,6 +1073,57 @@ function onMvModelChange() {
     mvState.modelPick = v;
   }
   refreshModelWindow();
+}
+
+/* Variant dropdown: "All variants" + every variant of the CURRENTLY selected
+   model (d.variant_chart already ignores the variant selection itself, so
+   the option list doesn't shrink to just whatever is picked). A dropdown
+   pick is a precise single choice; it doesn't replace the chart's own
+   click-to-multi-select - the two work on the same mvState.variants set. */
+function renderMvVariantSelect(d) {
+  const sel = mvEl("mvVariantSelect");
+  const items = d.variant_chart || [];
+  const html = ['<option value="all">All variants</option>'];
+  items.forEach(i => html.push(`<option value="${esc(i.label)}">${esc(i.label)} — ${fmtInt(i.value)} enq</option>`));
+  sel.innerHTML = html.join("");
+  const current = mvState.variants.size === 1 ? Array.from(mvState.variants)[0] : "all";
+  sel.value = Array.from(sel.options).some(o => o.value === current) ? current : "all";
+}
+
+function onMvVariantChange() {
+  const v = mvEl("mvVariantSelect").value;
+  mvState.variants = v === "all" ? new Set() : new Set([v]);
+  refreshModelWindow();
+}
+
+/* Month dropdown: populated once per window-open from the same months list
+   every other filter bar uses. Unlike Model/Variant (pure client-side slices
+   of the one record set already downloaded), changing month needs a fresh
+   download, since the record set itself is scoped to one month server-side. */
+function renderMvMonthSelect() {
+  const sel = mvEl("mvMonthSelect");
+  const periods = (state.meta && state.meta.available_periods) || [];
+  sel.innerHTML = periods.slice().reverse().map(p => `<option value="${esc(p.value)}">${esc(p.label)}</option>`).join("");
+  const want = mvState.filters.month;
+  sel.value = Array.from(sel.options).some(o => o.value === want) ? want : (sel.options[0]?.value ?? "");
+}
+
+async function onMvMonthChange() {
+  const v = mvEl("mvMonthSelect").value;
+  mvState.filters.month = v;
+  mvState.variants = new Set();      // a different month's variants/ages are a fresh slate
+  mvState.ages = new Set();
+  mvEl("mvSub").textContent = "Loading variant details…";
+  const seq = ++mvState.seq;
+  try {
+    const rec = await mvLoadRecords(mvState.model, mvState.dim, mvState.filters);
+    if (seq !== mvState.seq || !mvState.open) return;
+    mvState.rec = rec;
+    refreshModelWindow();
+  } catch (err) {
+    if (seq !== mvState.seq) return;
+    mvEl("mvSub").textContent = "Could not load variant details. Please try again.";
+  }
 }
 
 function renderMvVariantChart(d) {
@@ -1330,6 +1383,8 @@ function exportModelWindow() {
     mvEl("mvExport").addEventListener("click", exportModelWindow);
     mvEl("mvWaitExport").addEventListener("click", exportWaitingList);
     mvEl("mvModelSelect").addEventListener("change", onMvModelChange);
+    mvEl("mvVariantSelect").addEventListener("change", onMvVariantChange);
+    mvEl("mvMonthSelect").addEventListener("change", onMvMonthChange);
     mvEl("mvClear").addEventListener("click", () => {
       mvState.variants = new Set(); mvState.ages = new Set(); refreshModelWindow();
     });
@@ -1509,7 +1564,10 @@ async function loadFollowupCancelList() {
 /* ---------------------------------------------------------------------- */
 const fbState = {
   data: null, dim: "model",
-  open: false, win: { dim: "all", label: "", bucket: "all", bookedOnly: false },   // what the pop-up is showing
+  // what the pop-up is showing. variant/month are independent, additive filters on
+  // top of dim/label/bucket/bookedOnly - picking a variant doesn't lose which
+  // model/consultant/colour row you drilled into, and vice versa.
+  open: false, win: { dim: "all", label: "", bucket: "all", bookedOnly: false, variant: "", month: "" },
 };
 const FB_DIM_LABEL = { model: "Model", consultant: "Consultant", color: "Colour" };
 const FB_DIM_TAG = { all: "FOLLOW-UP WINDOW", model: "MODEL WINDOW", consultant: "CONSULTANT WINDOW", color: "COLOUR WINDOW" };
@@ -1595,7 +1653,11 @@ function renderBookedTable() {
 }
 
 /* ---------- pop-up ---------- */
-function fbWindowRows() {
+
+/* dim / label / bookedOnly only - this is the scope the Model/Variant/Month
+   dropdown OPTIONS are built from, so picking a variant doesn't shrink its
+   own dropdown down to just itself. */
+function fbScopedRows() {
   const d = fbState.data;
   if (!d) return [];
   const w = fbState.win;
@@ -1609,9 +1671,84 @@ function fbWindowRows() {
   });
 }
 
+const FB_DATE_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;          // enquiry_date is dd/mm/yyyy
+function fbRowMonth(r) {
+  const m = FB_DATE_RE.exec(r.enquiry_date || "");
+  return m ? `${m[3]}-${m[2]}` : "";
+}
+
+/* fbScopedRows() + the Variant and Month dropdowns (additive, independent of dim). */
+function fbWindowRows() {
+  const w = fbState.win;
+  return fbScopedRows().filter(r => {
+    if (w.variant && r.variant !== w.variant) return false;
+    if (w.month && fbRowMonth(r) !== w.month) return false;
+    return true;
+  });
+}
+
+function fbCountBy(rows, keyFn) {
+  const map = new Map();
+  rows.forEach(r => { const k = keyFn(r); if (k) map.set(k, (map.get(k) || 0) + 1); });
+  return map;
+}
+
+/* Model dropdown looks at ALL loaded rows (not fbScopedRows()) - it has its own
+   "All models" option and should list every model regardless of which dim the
+   window happens to be scoped to right now. */
+function fbModelOptions() {
+  const d = fbState.data;
+  if (!d) return [];
+  const map = fbCountBy(d.rows, r => r.model);
+  return Array.from(map.entries()).map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n);
+}
+function fbVariantOptions() {
+  const map = fbCountBy(fbScopedRows(), r => r.variant);
+  return Array.from(map.entries()).map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n);
+}
+function fbMonthOptions() {
+  const map = fbCountBy(fbScopedRows(), fbRowMonth);
+  return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));   // newest first
+}
+
+function renderFbToolbar() {
+  const w = fbState.win;
+
+  const modelSel = fbEl("fbModelSelect");
+  modelSel.innerHTML = ['<option value="all">All models</option>']
+    .concat(fbModelOptions().map(o => `<option value="${esc(o.label)}">${esc(o.label)} — ${fmtInt(o.n)}</option>`)).join("");
+  const wantModel = w.dim === "model" ? w.label : "all";
+  modelSel.value = Array.from(modelSel.options).some(o => o.value === wantModel) ? wantModel : "all";
+
+  const variantSel = fbEl("fbVariantSelect");
+  variantSel.innerHTML = ['<option value="">All variants</option>']
+    .concat(fbVariantOptions().map(o => `<option value="${esc(o.label)}">${esc(o.label)} — ${fmtInt(o.n)}</option>`)).join("");
+  variantSel.value = Array.from(variantSel.options).some(o => o.value === w.variant) ? w.variant : "";
+
+  const monthSel = fbEl("fbMonthSelect");
+  monthSel.innerHTML = ['<option value="">All months</option>']
+    .concat(fbMonthOptions().map(([v, n]) => `<option value="${v}">${esc(monthLabelOf(v))} — ${fmtInt(n)}</option>`)).join("");
+  monthSel.value = Array.from(monthSel.options).some(o => o.value === w.month) ? w.month : "";
+}
+
+function onFbModelChange() {
+  const v = fbEl("fbModelSelect").value;
+  fbState.win.dim = v === "all" ? "all" : "model";
+  fbState.win.label = v === "all" ? "" : v;
+  renderFollowupWindow();
+}
+function onFbVariantChange() {
+  fbState.win.variant = fbEl("fbVariantSelect").value;
+  renderFollowupWindow();
+}
+function onFbMonthChange() {
+  fbState.win.month = fbEl("fbMonthSelect").value;
+  renderFollowupWindow();
+}
+
 function openFollowupWindow(dim, label, bucket, bookedOnly = false) {
   if (!fbState.data) return;
-  fbState.win = { dim: dim || "all", label: label || "", bookedOnly: !!bookedOnly,
+  fbState.win = { dim: dim || "all", label: label || "", bookedOnly: !!bookedOnly, variant: "", month: "",
                   bucket: bucket === "all" || bucket === undefined ? "all" : Number(bucket) };
   const modal = fbEl("fbModal");
   modal.classList.add("open");
@@ -1657,6 +1794,7 @@ function fbHistoryCell(r) {
 
 function renderFollowupWindow() {
   const d = fbState.data, w = fbState.win;
+  renderFbToolbar();
   const scoped = fbWindowRows();
   const rows = fbVisibleRows();
   const f = fuFilters();
@@ -1694,12 +1832,18 @@ function renderFollowupWindow() {
       <div class="mv-kpi-sub">${t.key === "all" ? (w.bookedOnly ? "in this window" : `${fmtInt(nBooked)} booked`) : `${fbPct(cnt[t.key], scoped.length)} of ${fmtInt(scoped.length)}`}</div>
     </div>`).join("");
 
+  const extraBits = [];
+  if (w.variant) extraBits.push(`variant: ${w.variant}`);
+  if (w.month) extraBits.push(`month: ${monthLabelOf(w.month)}`);
+  const hasExtra = extraBits.length > 0;
+
   const note = fbEl("fbFilterNote");
-  note.hidden = w.bucket === "all" && !w.bookedOnly;
+  note.hidden = w.bucket === "all" && !w.bookedOnly && !hasExtra;
   fbEl("fbFilterText").textContent = `Showing ${w.bookedOnly ? "only booked enquiries" : "all enquiries"}` +
-    (w.bucket === "all" ? "" : ` with ${fbFollowText(w.bucket)}`);
+    (w.bucket === "all" ? "" : ` with ${fbFollowText(w.bucket)}`) +
+    (hasExtra ? ` · ${extraBits.join(" · ")}` : "");
   fbEl("fbClear").textContent = "Show all enquiries";
-  fbEl("fbClear").hidden = w.bucket === "all" && !w.bookedOnly;
+  fbEl("fbClear").hidden = w.bucket === "all" && !w.bookedOnly && !hasExtra;
 
   // ---- full detail table ----
   fbEl("fbTableHead").innerHTML =
@@ -1784,7 +1928,14 @@ function exportFollowupWindow() {
     fbEl("fbClose").addEventListener("click", closeFollowupWindow);
     fbEl("fbModal").addEventListener("click", (e) => { if (e.target === fbEl("fbModal")) closeFollowupWindow(); });
     fbEl("fbExport").addEventListener("click", exportFollowupWindow);
-    fbEl("fbClear").addEventListener("click", () => { fbState.win.bucket = "all"; fbState.win.bookedOnly = false; renderFollowupWindow(); });
+    fbEl("fbClear").addEventListener("click", () => {
+      fbState.win.bucket = "all"; fbState.win.bookedOnly = false;
+      fbState.win.variant = ""; fbState.win.month = "";          // new dropdowns reset the same way bucket/bookedOnly always did
+      renderFollowupWindow();
+    });
+    fbEl("fbModelSelect").addEventListener("change", onFbModelChange);
+    fbEl("fbVariantSelect").addEventListener("change", onFbVariantChange);
+    fbEl("fbMonthSelect").addEventListener("change", onFbMonthChange);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
   else wire();
@@ -1800,7 +1951,9 @@ function exportFollowupWindow() {
 /* ---------------------------------------------------------------------- */
 const svState = {
   open: false, data: null, seq: 0,
-  win: { dim: "all", label: "", model: "", stage: "all", aged: false },
+  // dim/label/model/stage/aged: existing click-driven scope (card/row clicks), unchanged.
+  // fModel/fVariant/fMonth: the new toolbar dropdowns - independent, additive, combinable.
+  win: { dim: "all", label: "", model: "", stage: "all", aged: false, fModel: "all", fVariant: "all", fMonth: "" },
 };
 const svCache = new Map();
 const svEl = (id) => document.getElementById(id);
@@ -1850,7 +2003,7 @@ function svLoadUnits() {
 }
 
 async function openStockWindow(win) {
-  svState.win = { dim: "all", label: "", model: "", stage: "all", aged: false, ...win };
+  svState.win = { dim: "all", label: "", model: "", stage: "all", aged: false, fModel: "all", fVariant: "all", fMonth: "", ...win };
   svState.data = null;
   const modal = svEl("svModal");
   modal.classList.add("open");
@@ -1882,7 +2035,8 @@ function closeStockWindow() {
   svState.open = false;
 }
 
-function svScopeRows() {                                           // rows of the clicked group (before stage / aged filters)
+/* The original click-driven scope (card/row clicks) - unchanged. */
+function svBaseRows() {
   const d = svState.data, w = svState.win;
   if (!d) return [];
   return d.rows.filter(r => {
@@ -1894,6 +2048,84 @@ function svScopeRows() {                                           // rows of th
     }
     return true;
   });
+}
+
+const SV_DATE_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;          // inv_date is dd/mm/yyyy
+function svRowMonth(r) {
+  const m = SV_DATE_RE.exec(r.inv_date || "");
+  return m ? `${m[3]}-${m[2]}` : "";
+}
+
+/* svBaseRows() + the new Model/Variant/Month toolbar dropdowns - independent
+   of, and combinable with, the existing dim/label/model click-driven scope. */
+function svScopeRows() {                                           // rows of the clicked group (before stage / aged filters)
+  const w = svState.win;
+  return svBaseRows().filter(r => {
+    if (w.fModel && w.fModel !== "all" && r.model !== w.fModel) return false;
+    if (w.fVariant && w.fVariant !== "all" && r.variant !== w.fVariant) return false;
+    if (w.fMonth && svRowMonth(r) !== w.fMonth) return false;
+    return true;
+  });
+}
+
+function svCountBy(rows, keyFn) {
+  const map = new Map();
+  rows.forEach(r => { const k = keyFn(r); if (k) map.set(k, (map.get(k) || 0) + 1); });
+  return map;
+}
+
+/* Model options come from the full click-scoped set (before fModel/fVariant/fMonth),
+   so the Model list doesn't shrink to just whatever is already picked. Variant
+   options narrow to the currently-picked Model (if any), and Month options narrow
+   to both - each dropdown reflects what the ones "above" it already chose. */
+function svModelOptions() { return svCountBy(svBaseRows(), r => r.model); }
+function svVariantOptions() {
+  const w = svState.win;
+  const rows = svBaseRows().filter(r => !w.fModel || w.fModel === "all" || r.model === w.fModel);
+  return svCountBy(rows, r => r.variant);
+}
+function svMonthOptions() {
+  const w = svState.win;
+  const rows = svBaseRows().filter(r =>
+    (!w.fModel || w.fModel === "all" || r.model === w.fModel) &&
+    (!w.fVariant || w.fVariant === "all" || r.variant === w.fVariant));
+  return svCountBy(rows, svRowMonth);
+}
+
+function renderSvToolbar() {
+  const w = svState.win;
+
+  const modelSel = svEl("svModelSelect");
+  const mOpts = Array.from(svModelOptions().entries()).sort((a, b) => b[1] - a[1]);
+  modelSel.innerHTML = ['<option value="all">All models</option>']
+    .concat(mOpts.map(([label, n]) => `<option value="${esc(label)}">${esc(label)} — ${fmtInt(n)}</option>`)).join("");
+  modelSel.value = Array.from(modelSel.options).some(o => o.value === w.fModel) ? w.fModel : "all";
+
+  const variantSel = svEl("svVariantSelect");
+  const vOpts = Array.from(svVariantOptions().entries()).sort((a, b) => b[1] - a[1]);
+  variantSel.innerHTML = ['<option value="all">All variants</option>']
+    .concat(vOpts.map(([label, n]) => `<option value="${esc(label)}">${esc(label)} — ${fmtInt(n)}</option>`)).join("");
+  variantSel.value = Array.from(variantSel.options).some(o => o.value === w.fVariant) ? w.fVariant : "all";
+
+  const monthSel = svEl("svMonthSelect");
+  const monOpts = Array.from(svMonthOptions().entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  monthSel.innerHTML = ['<option value="">All months</option>']
+    .concat(monOpts.map(([v, n]) => `<option value="${v}">${esc(monthLabelOf(v))} — ${fmtInt(n)}</option>`)).join("");
+  monthSel.value = Array.from(monthSel.options).some(o => o.value === w.fMonth) ? w.fMonth : "";
+}
+
+function onSvModelChange() {
+  svState.win.fModel = svEl("svModelSelect").value;
+  svState.win.fVariant = "all";     // a different model's variants are a fresh slate
+  renderStockWindow();
+}
+function onSvVariantChange() {
+  svState.win.fVariant = svEl("svVariantSelect").value;
+  renderStockWindow();
+}
+function onSvMonthChange() {
+  svState.win.fMonth = svEl("svMonthSelect").value;
+  renderStockWindow();
 }
 
 function svVisibleRows() {                                          // oldest TAT first; click any heading to re-sort (app-wide sorter)
@@ -1909,6 +2141,7 @@ const svTatPill = (t) => (t === null || t === undefined) ? "—"
 
 function renderStockWindow() {
   const d = svState.data, w = svState.win;
+  renderSvToolbar();
   const scoped = svScopeRows();
   const rows = svVisibleRows();
   const f = readInventoryFilters();
@@ -1946,10 +2179,17 @@ function renderStockWindow() {
       <div class="mv-kpi-sub">${esc(t.sub)}</div>
     </div>`).join("");
 
-  const filtered = w.stage !== "all" || w.aged;
+  const extraBits = [];
+  if (w.fModel && w.fModel !== "all") extraBits.push(`model: ${w.fModel}`);
+  if (w.fVariant && w.fVariant !== "all") extraBits.push(`variant: ${w.fVariant}`);
+  if (w.fMonth) extraBits.push(`month: ${monthLabelOf(w.fMonth)}`);
+  const hasExtra = extraBits.length > 0;
+
+  const filtered = w.stage !== "all" || w.aged || hasExtra;
   svEl("svFilterNote").hidden = !filtered;
-  svEl("svFilterText").textContent = w.aged ? `Showing only physical units aged ${SV_AGED_DAYS}+ days`
-    : `Showing only ${w.stage === "Physical" ? "physical" : "in-transit"} units`;
+  const stageText = w.aged ? `Showing only physical units aged ${SV_AGED_DAYS}+ days`
+    : (w.stage !== "all" ? `Showing only ${w.stage === "Physical" ? "physical" : "in-transit"} units` : "");
+  svEl("svFilterText").textContent = [stageText, hasExtra ? extraBits.join(" · ") : ""].filter(Boolean).join(" · ");
 
   // ---- table ----
   svEl("svTableHead").innerHTML = `<tr>${SV_COLS.map(c =>
@@ -2012,7 +2252,14 @@ function exportStockWindow() {
     svEl("svClose").addEventListener("click", closeStockWindow);
     svEl("svModal").addEventListener("click", (e) => { if (e.target === svEl("svModal")) closeStockWindow(); });
     svEl("svExport").addEventListener("click", exportStockWindow);
-    svEl("svClear").addEventListener("click", () => { svState.win.stage = "all"; svState.win.aged = false; renderStockWindow(); });
+    svEl("svClear").addEventListener("click", () => {
+      svState.win.stage = "all"; svState.win.aged = false;
+      svState.win.fModel = "all"; svState.win.fVariant = "all"; svState.win.fMonth = "";
+      renderStockWindow();
+    });
+    svEl("svModelSelect").addEventListener("change", onSvModelChange);
+    svEl("svVariantSelect").addEventListener("change", onSvVariantChange);
+    svEl("svMonthSelect").addEventListener("change", onSvMonthChange);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
   else wire();
@@ -2133,7 +2380,9 @@ function renderStockList() {
     `<tr><th>Enquiry date</th><th>Customer</th><th>Phone</th><th>Consultant</th><th>Status</th><th>Model</th>` +
     `<th>Variant (enquired)</th><th>Colour</th><th>Match</th><th class="num">Physical</th><th class="num">In transit</th>` +
     `<th class="num">Allocated</th><th>Other colour (free)</th><th>Other variant (free)</th><th>Chassis · physical</th>` +
-    `<th>Chassis · transit</th><th>Location</th><th class="num">Oldest age</th><th>Resolved stock variant</th><th>Note</th></tr>`;
+    `<th>Chassis · transit</th><th>Location</th><th class="num">Oldest age</th><th>Resolved stock variant</th>` +
+    `<th>Next variant (one step up)</th><th class="num">Next · physical</th><th class="num">Next · transit</th>` +
+    `<th>Upsell</th><th>Note</th></tr>`;
   const shown = rows.slice(0, stState.shown);
   document.getElementById("stListBody").innerHTML = shown.length ? shown.map(r => `
     <tr>
@@ -2144,8 +2393,11 @@ function renderStockList() {
       <td class="num">${r.free_transit ? `<strong>${r.free_transit}</strong>` : "0"}</td>
       <td class="num">${r.allocated}</td><td>${dash(r.other_color)}</td><td>${dash(r.other_variant)}</td>
       <td>${dash(r.chassis_physical)}</td><td>${dash(r.chassis_transit)}</td><td>${dash(r.location)}</td>
-      <td class="num">${dash(r.oldest_age)}</td><td>${dash(r.resolved_variant)}</td><td class="wrap">${dash(r.note)}</td>
-    </tr>`).join("") : `<tr><td colspan="20" class="empty-cell">No enquiries for this selection.</td></tr>`;
+      <td class="num">${dash(r.oldest_age)}</td><td>${dash(r.resolved_variant)}</td>
+      <td>${dash(r.next_variant)}</td><td class="num">${r.nvk ? r.next_free_physical : "–"}</td>
+      <td class="num">${r.nvk ? r.next_free_transit : "–"}</td>
+      <td>${r.upsell_flag ? `<strong>${esc(r.upsell_flag)}</strong>` : "–"}</td><td class="wrap">${dash(r.note)}</td>
+    </tr>`).join("") : `<tr><td colspan="24" class="empty-cell">No enquiries for this selection.</td></tr>`;
   document.getElementById("stListHint").textContent =
     `${fmtInt(rows.length)} enquir${rows.length === 1 ? "y" : "ies"}` +
     (shown.length < rows.length ? ` — showing ${fmtInt(shown.length)}. Use the filters above, or Download Excel for all.` : "");
