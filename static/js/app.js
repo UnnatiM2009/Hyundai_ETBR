@@ -13,6 +13,7 @@ const state = {
   gaugeLength: null,
   inventoryFilterOptions: null,
   inventoryBreakdownCache: null,
+  cmpMtd: false,         // Month Comparison page's MTD toggle - pressed = on
 };
 
 /* Every section that has its own Month / Model / Consultant / Source filter
@@ -620,6 +621,13 @@ function renderComparisonTable(comparison) {
   document.getElementById("colPrev").textContent = comparison.previous_period_label;
   document.getElementById("colCurr").textContent = comparison.current_period_label;
 
+  document.getElementById("comparisonSubtitle").textContent = comparison.mtd
+    ? `Month-to-Date — same day range (1-${comparison.mtd_day}) in both months, so a part-way-through month isn't unfairly compared to a full one`
+    : "How this period compares with the one before it";
+
+  const mtdBtn = document.getElementById("cmpMtd");
+  if (mtdBtn) mtdBtn.setAttribute("aria-pressed", comparison.mtd ? "true" : "false");
+
   const moneyRows = new Set();
   const pctRows = new Set(["Test Drive Rate (%)", "Enquiry to Booking Conv. (%)",
     "Enquiry to Retail Conv. (%)", "Booking to Retail Conv. (%)", "Test Drive to Booking Conv. (%)"]);
@@ -657,14 +665,15 @@ function renderComparisonTable(comparison) {
       : "";
 }
 
-async function fetchComparisonFor(prefix) {
+async function fetchComparisonFor(prefix, mtd = false) {
   const f = readFilterBar(prefix);
   const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source });
+  if (mtd) params.set("mtd", "true");
   return getJSON(`/api/comparison?${params.toString()}`);
 }
 
 async function refreshComparisonView() {
-  const comparison = await fetchComparisonFor("cmp");
+  const comparison = await fetchComparisonFor("cmp", state.cmpMtd);
   renderComparisonTable(comparison);
 }
 
@@ -2557,6 +2566,14 @@ async function boot() {
   attachFilterBar("book", loadBooking);
   attachFilterBar("sales", loadSales);
   attachFilterBar("cmp", refreshComparisonView);
+
+  // MTD toggle: press it to compare the same day-range in both months
+  // (e.g. 1st-3rd vs 1st-3rd); press again to go back to full months.
+  document.getElementById("cmpMtd").addEventListener("click", async (e) => {
+    state.cmpMtd = !state.cmpMtd;
+    e.currentTarget.setAttribute("aria-pressed", state.cmpMtd ? "true" : "false");
+    await refreshComparisonView();
+  });
 
   // Follow-up page: extra date field + list tabs
   attachFilterBar("fu", loadFollowup, {

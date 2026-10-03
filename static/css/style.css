@@ -391,6 +391,17 @@ canvas { max-width: 100%; }
 }
 .light-ghost:hover { background: var(--border); color: var(--ink); }
 
+/* MTD toggle - a press-and-hold-style button (not a plain action button):
+   off by default (looks like any other ghost button), pressed/amber while
+   active, so its own state is obvious at a glance. */
+.mtd-toggle { font-weight: 700; letter-spacing: 0.02em; }
+.mtd-toggle[aria-pressed="true"] {
+  background: var(--amber);
+  color: #fff;
+  border-color: var(--amber);
+}
+.mtd-toggle[aria-pressed="true"]:hover { background: #C76B23; color: #fff; }
+
 /* ==========================================================================
    Follow-up + Enquiry-wise-stock pages (added) - text tables, badges, chips
    ========================================================================== */
