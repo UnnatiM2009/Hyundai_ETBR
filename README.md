@@ -136,7 +136,9 @@ revenue, amount received, mode of purchase, invoice-to-delivery days.
   enquiry can this unit fulfil" — they read the same underlying stock data, just for
   different purposes.
 - **Enquiry Wise Stock** *(new)* — see below.
-- **Month Comparison** — every key metric, previous vs current month, filterable.
+- **Month Comparison** — every key metric, previous vs current month, filterable, with an
+  **MTD toggle** to compare the same day-range in both months instead of a full month
+  against one that's barely started (see V16 changes below).
 
 ## 7a. Enquiry Wise Stock (Physical vs In Transit)
 
@@ -352,3 +354,22 @@ The filter options are now re-read after Refresh / Update monthly data, so new m
 **V15 - Follow-up page:** the separate "Cancels in month" dropdown is removed. The two cancel cards and the
 "Cancelled enquiries" list now count enquiries whose Lost Date falls between the From and To dates, so every number on
 the page follows the same dates (`_cancel_view` in `data_processor.py`).
+
+## V16 changes
+
+**Month Comparison - MTD (Month-to-Date) toggle**
+- New **MTD** button next to Reset filters. Off (default) = exactly the previous full-month-vs-full-month
+  comparison, completely unchanged. Pressed = both months are cut off at **today's day-of-month** before
+  comparing - e.g. on 3 Oct, that's the 1st-3rd of October against the 1st-3rd of September, not a full
+  September against three days of October. This is what fixes the misleading "-97.8%"-style drops that show
+  up for a few days right after a new month starts, when the real story is often the opposite (a new month
+  can easily be *ahead* of where the previous one was at the same point).
+- The table headers, the title, and the subtitle all relabel themselves while MTD is on (e.g. "October 2026
+  (1-3)"), so it's never ambiguous which numbers you're looking at. Model / Consultant / Source filters and
+  the Month dropdown keep working exactly as before and compose with MTD normally.
+- Scoped to the Month Comparison page only - the vs-last-month delta badges on Overview, Enquiry, Test Drive,
+  Booking and Retails are untouched and keep comparing full months, exactly as before.
+- Backend: `compute_comparison(..., mtd: bool)` in `data_processor.py`, which forwards a `mtd_day` cutoff
+  through `compute_kpis()` -> `DashboardData.view()` -> `DashboardData._filter()`, which filters each row's
+  *actual date* (Enquiry Date / Booking Date / Retail date / Lost Date, via `_MONTH_COL_TO_DATE_COL`) to
+  `day <= mtd_day`, on top of the existing month match. API: `GET /api/comparison?...&mtd=true`.

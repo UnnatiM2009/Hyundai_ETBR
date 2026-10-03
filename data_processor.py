@@ -377,13 +377,27 @@ class DashboardData:
             return self.previous_period
         return period  # assume already 'YYYY-MM'
 
+    # Which raw date column each "Month" column was derived from - used to
+    # apply the day-of-month cutoff for Month-to-Date (MTD) comparisons.
+    _MONTH_COL_TO_DATE_COL = {
+        "Month": "Enquiry Date",
+        "Booking Month": "Booking Date",
+        "Retail Month": "Retail date",
+        "Lost Month": "Lost Date",
+    }
+
     # ------------------------------------------------------------------- #
     def _filter(self, df: pd.DataFrame, period: Optional[str],
                 model: Optional[str] = None, consultant: Optional[str] = None,
                 source: Optional[str] = None, month_col: str = "Month",
-                age: Optional[str] = None) -> pd.DataFrame:
+                age: Optional[str] = None, mtd_day: Optional[int] = None) -> pd.DataFrame:
         """Filter by month (on `month_col`) plus the optional Model / Consultant /
-        Source drill-down filters."""
+        Source drill-down filters. `mtd_day`, when given, additionally keeps only
+        rows whose underlying date falls on or before that day-of-month - this is
+        what makes a Month-to-Date comparison apples-to-apples (e.g. '1st-3rd of
+        this month' vs '1st-3rd of last month', instead of a full month vs a
+        few days). A row whose date is blank (NaT) is dropped by an mtd_day
+        filter, since there's no day to compare it on."""
         if df.empty:
             return df
         d = df
@@ -397,6 +411,10 @@ class DashboardData:
             d = d[d["Source"] == source]
         if age and age != "all":
             d = d[_age_mask(d, age)]
+        if mtd_day is not None:
+            date_col = self._MONTH_COL_TO_DATE_COL.get(month_col)
+            if date_col and date_col in d.columns:
+                d = d[d[date_col].dt.day <= mtd_day]
         return d
 
     # Each kind of event is a slice of the one Enquiry sheet, counted by its own date.
@@ -412,14 +430,14 @@ class DashboardData:
 
     def view(self, kind: str, period: Optional[str], model: Optional[str] = None,
              consultant: Optional[str] = None, source: Optional[str] = None,
-             age: Optional[str] = None) -> pd.DataFrame:
+             age: Optional[str] = None, mtd_day: Optional[int] = None) -> pd.DataFrame:
         flag, month_col = self._KIND_SPEC[kind]
         df = self.enquiry
         if df.empty:
             return df
         if flag:
             df = df[df[flag]]
-        return self._filter(df, period, model, consultant, source, month_col=month_col, age=age)
+        return self._filter(df, period, model, consultant, source, month_col=month_col, age=age, mtd_day=mtd_day)
 
     # ------------------------------------------------------------------- #
     def filter_options(self) -> dict:
@@ -469,13 +487,13 @@ store = DashboardData()
 
 def compute_kpis(period: Optional[str], model: Optional[str] = None,
                  consultant: Optional[str] = None, source: Optional[str] = None,
-                 age: Optional[str] = None) -> dict:
-    enq = store.view("enquiry", period, model, consultant, source, age=age)
-    booked = store.view("booked", period, model, consultant, source, age=age)
-    retail = store.view("retail", period, model, consultant, source, age=age)
-    b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age)
-    f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age)
-    a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age)
+                 age: Optional[str] = None, mtd_day: Optional[int] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, age=age, mtd_day=mtd_day)
+    booked = store.view("booked", period, model, consultant, source, age=age, mtd_day=mtd_day)
+    retail = store.view("retail", period, model, consultant, source, age=age, mtd_day=mtd_day)
+    b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
+    f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
+    a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
 
     total_enquiries = len(enq)
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
@@ -516,14 +534,25 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
 
 
 def compute_comparison(period: Optional[str] = None, model: Optional[str] = None,
-                       consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+                       consultant: Optional[str] = None, source: Optional[str] = None,
+                       mtd: bool = False) -> dict:
     """period, when given, is the 'current' month to compare ('YYYY-MM'); the
-    previous month is always the calendar month right before it."""
+    previous month is always the calendar month right before it.
+
+    mtd=True switches to a Month-to-Date comparison: both months are cut off
+    at today's day-of-month (e.g. on 3 Oct, that's the 1st-3rd of October
+    against the 1st-3rd of September), instead of a full previous month
+    against a current month that may have barely started - which is what
+    was producing misleadingly huge "-97.8%" style drops right after a new
+    month begins. mtd=False (the default) is the original, unchanged
+    full-month-vs-full-month comparison."""
     current_period = period or store.current_period
     previous_period = _shift_period(current_period, -1)
 
-    current = compute_kpis(current_period, model, consultant, source)
-    previous = compute_kpis(previous_period, model, consultant, source)
+    mtd_day = dt.date.today().day if mtd else None
+
+    current = compute_kpis(current_period, model, consultant, source, mtd_day=mtd_day)
+    previous = compute_kpis(previous_period, model, consultant, source, mtd_day=mtd_day)
 
     metrics = [
         ("total_enquiries", "Total Enquiries"),
@@ -551,12 +580,21 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
             "direction": "up" if (change or 0) > 0 else ("down" if (change or 0) < 0 else "flat"),
         })
 
+    current_label = _month_label(current_period)
+    previous_label = _month_label(previous_period)
+    if mtd:
+        day_range = f"1-{mtd_day}"
+        current_label = f"{current_label} ({day_range})"
+        previous_label = f"{previous_label} ({day_range})"
+
     return {
         "current_period": current_period,
-        "current_period_label": _month_label(current_period),
+        "current_period_label": current_label,
         "previous_period": previous_period,
-        "previous_period_label": _month_label(previous_period),
+        "previous_period_label": previous_label,
         "filters": {"model": model or "all", "consultant": consultant or "all", "source": source or "all"},
+        "mtd": mtd,
+        "mtd_day": mtd_day,
         "rows": rows,
     }
 

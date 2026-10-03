@@ -122,8 +122,9 @@ def api_comparison(
     model: Optional[str] = Query(default=None),
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    mtd: bool = Query(default=False),
 ):
-    return dp.compute_comparison(period=month, model=model, consultant=consultant, source=source)
+    return dp.compute_comparison(period=month, model=model, consultant=consultant, source=source, mtd=mtd)
 
 
 @app.get("/api/breakdown")
