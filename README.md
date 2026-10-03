@@ -190,6 +190,22 @@ show 0 or are omitted.
 
 ---
 
+### Enquiry Wise Stock - Excel download (Mahindra layout + Kia Next Variant)
+
+The **Download Excel** button now produces the same workbook layout as the Mahindra report:
+
+- **Summary** with clickable counts - click a count (or the status name) to jump to a sheet listing exactly those
+  enquiries, each with a **<< Back to Summary** link. Counts are live formulas over the other sheets.
+- Sheets: Summary, Stock Data, Enquiry Stock Match, Demand vs Stock, Ageing Stock - No Enquiry, one sheet per match
+  status, and **Variant Ladder**. Match Status, Free - Physical / In Transit / Allocated, the Demand vs Stock counts
+  and the Summary are formulas over *Stock Data* (grey *Key:* columns), so editing the stock rows recalculates them.
+- **Next Variant (one step up)** columns, as in the Kia report: the next trim up on the same engine / gearbox / fuel, its
+  free stock (physical and in transit) in the colour the customer asked for, its chassis numbers and an **Upsell Flag**
+  (*UPSELL - only upgrade in stock* / *Upgrade also in stock*). Hyundai has no price master here, so the ladder follows
+  the trim order in `TRIM_LADDERS` (top of `stock_engine.py`) - edit it when the trim line-up changes. Corporate, SE and
+  unlisted trims are left out of the ladder.
+- **Test Drive is not used** in the matching or the workbook (same as Kia). Every live enquiry is matched.
+
 ## 8. Putting it on GitHub and Render (so it's reachable from anywhere)
 
 ### ⚠️ First — a data privacy note
@@ -373,3 +389,35 @@ the page follows the same dates (`_cancel_view` in `data_processor.py`).
   through `compute_kpis()` -> `DashboardData.view()` -> `DashboardData._filter()`, which filters each row's
   *actual date* (Enquiry Date / Booking Date / Retail date / Lost Date, via `_MONTH_COL_TO_DATE_COL`) to
   `day <= mtd_day`, on top of the existing month match. API: `GET /api/comparison?...&mtd=true`.
+
+## V17 changes
+
+**Model / Variant / Month dropdowns in every pop-up window**
+
+All three pop-ups - the Model Window (Overview/Enquiry/Test Drive/Booking/Retails), the Enquiry Follow-up
+window, and the Vehicle Stock window - now have a toolbar with **Model**, **Variant** and **Month** dropdowns,
+so you can drill into a precise slice without closing the window and clicking a different row. Each pop-up's
+existing way of opening and filtering (clicking a bar, a KPI card, a table row or cell) is completely
+unchanged - the three dropdowns are an additional, independent way to narrow the same data, and they combine
+with whatever the window was already scoped to:
+
+- **Model Window (`mvModal`)** already had a Model dropdown. Variant is now a second dropdown next to it
+  (in addition to the existing click-a-bar-on-the-chart multi-select, which still works exactly as before -
+  the dropdown is a quick, precise single pick; the chart is still there for multi-select). Variant switching
+  is instant (pure client-side, same cached record set). Month switching re-downloads the record set for the
+  new month (the only one of the three that needs a server round-trip, since the record set itself is
+  scoped to one month) - everything else in the window (KPIs, charts, tables) then recomputes exactly as it
+  already did for a model/variant change.
+- **Enquiry Follow-up window (`fbModal`)** had no dropdowns before. Its underlying data already includes
+  every month and every model (only Model/Consultant/Source and the as-of date were ever sent to the
+  server), so all three new dropdowns are pure client-side filters - no backend change at all.
+  `fbWindowRows()` keeps its original dim/label/bookedOnly scoping (`fbScopedRows()`, verbatim) and layers
+  Variant/Month on top; the Model dropdown sets the same `dim`/`label` a row click already would.
+- **Vehicle Stock window (`svModal`)** had no dropdowns before, though it already had an internal
+  Model/Variant/Colour "dim" driven by clicking a table row. The new dropdowns are a *separate*, combinable
+  layer (`fModel`/`fVariant`/`fMonth` on `svState.win`) on top of that existing click-driven scope
+  (`svBaseRows()`, verbatim) - so you can, for example, click a Colour row and then use the dropdowns to
+  additionally narrow to one model and one month. Month is derived from each unit's HMI Invoice Date.
+- In all three, picking a value from one dropdown narrows what the next one offers (e.g. picking a Model
+  narrows the Variant list to that model's variants), and every dropdown always has an "All ..." option to
+  go back. Nothing about the pages behind the pop-ups, or any other part of the dashboard, changed.

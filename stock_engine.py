@@ -276,6 +276,17 @@ def stock_age_days(df: pd.DataFrame, today=None) -> pd.Series:
     return live.where(live.notna(), file_age)
 
 
+def with_live_age(stk: pd.DataFrame) -> pd.DataFrame:
+    """Copy of the stock with 'Age' = days since the HMI invoice date as of today (STOCK_AGE_BASIS), the same
+    basis as the Vehicle Stock page. The workbook's own 'Stock Age' counts from the plant sign-off date and
+    over-states how long the car has been with the dealer."""
+    if stk is None or stk.empty:
+        return stk
+    out = stk.copy()
+    out["Age"] = stock_age_days(out)
+    return out
+
+
 def _exact_col(df: pd.DataFrame, names: tuple) -> Optional[str]:
     """First column whose heading equals one of `names` (case-insensitive, exact - never a partial match)."""
     lower = {str(c).strip().lower(): c for c in df.columns}
@@ -526,6 +537,118 @@ def _build_stock(raw: pd.DataFrame, sheet: str, path: str, forced_type: Optional
 
 
 # --------------------------------------------------------------------------- #
+# Upgrade ladder ("Next Variant - one step up", ported from the Kia report)
+# --------------------------------------------------------------------------- #
+# Kia has a price master, so its ladder is "next higher ex-showroom price". Hyundai has
+# no price master in this dashboard, so the ladder is built from the TRIM ORDER below
+# (lowest -> highest) for each model. Two variants are on the same ladder only when
+# everything except the trim (engine, gearbox, fuel / CNG) is identical, so the next
+# variant is always the same engine + gearbox + fuel, one trim higher.
+#
+# Edit TRIM_LADDERS if Hyundai changes the trim line-up. "HX#" means the numbered HX
+# trims (HX 2, 4, 5, 5+, 6, 6T, 8, 10 ...), ordered by number.
+# Corporate, SE (special edition) and anything not listed here are kept OUT of the
+# ladder: they are never suggested as an upgrade and show "Not in upgrade ladder".
+TRIM_LADDERS = {
+    "AURA":          [["E", "S", "SX"]],
+    "ALCAZAR":       [["Executive", "Prestige", "Platinum", "Signature"]],
+    "I20":           [["Magna Executive", "Magna", "Sportz", "Sportz(O)", "Asta", "Asta(O)"]],
+    "GRANDI10NIOS":  [["Era", "Magna", "Sportz", "Sportz(O)", "Asta"]],
+    "CRETA":         [["E", "EX", "EX(O)", "S", "S(O)", "SX", "SX Tech", "SX Premium", "SX(O)", "King"]],
+    "CRETANLINE":    [["N6", "N8", "N10"]],
+    "VENUENLINE":    [["N6", "N8", "N10"]],
+    "I20NLINE":      [["N6", "N8", "N10"]],
+    "EXTER":         [["HX#"]],
+    "VENUE":         [["HX#"]],
+    "VERNA":         [["HX#"], ["EX", "SX", "SX(O)"]],
+}
+ANY_COLOR = "(ANY)"      # key used in the Excel export when a colour is not captured / not in the file
+# Trims that look like a ladder trim but are a different car (kept out of the ladder)
+LADDER_EXCLUDE = {"GRANDI10NIOS": [r"SPORTZ V\b"]}
+TOP_VARIANT = "Top variant - no upgrade"
+NOT_IN_LADDER = "Not in upgrade ladder"
+_LADDER_NOISE = {"KAPPA", "BS6", "BS62", "BSVI", "NEW", "ALL", "HYUNDAI", "MY", "OPT"}
+
+
+def _ladder_norm(variant, model) -> str:
+    u = str(variant).upper()
+    model_words = set(re.sub(r"[^A-Z0-9]", " ", str(model).upper()).split())
+    model_words |= {mkey(model)} | _LADDER_NOISE
+    u = " ".join(w for w in re.sub(r"[^A-Z0-9()+.]", " ", u).split() if w not in model_words)
+    u = re.sub(r"\bDUAL\s*CNG", "CNG", u)
+    u = re.sub(r"\s*\(\s*O\s*\)", "(O)", u)
+    u = re.sub(r"(?<=\d)(?=[A-Z])", " ", u)                  # "1.2MT" -> "1.2 MT", "HX6DUALCNGSE" -> "HX6 DUAL..."
+    u = re.sub(r"(?<=\bCNG)(?=SE\b)", " ", u)
+    return re.sub(r"\s+", " ", u).strip()
+
+
+def ladder_position(mk: str, variant, model):
+    """-> (group_key, rank) for a variant on its model's upgrade ladder, or None."""
+    ladders = TRIM_LADDERS.get(mk)
+    if not ladders or _blank(variant):
+        return None
+    u = _ladder_norm(variant, model)
+    if re.search(r"(?<![A-Z0-9])SE(?![A-Z0-9])|CNGSE$|DUALSE$", u) or "CORPORATE" in u:
+        return None
+    if any(re.search(x, u) for x in LADDER_EXCLUDE.get(mk, [])):
+        return None
+    for li, ladder in enumerate(ladders):
+        found = None
+        if ladder == ["HX#"]:
+            m = re.search(r"(?<![A-Z0-9])HX\s*(\d+)\s*(\+|T(?![A-Z]))?", u)
+            if m:
+                rank = int(m.group(1)) + (0.5 if m.group(2) == "+" else 0.2 if m.group(2) == "T" else 0)
+                found = (m.group(0), rank)
+        else:
+            for ri in sorted(range(len(ladder)), key=lambda i: -len(ladder[i])):
+                lab = re.sub(r"\s*\(\s*O\s*\)", "(O)", ladder[ri].upper())
+                pat = r"(?<![A-Z0-9])" + re.escape(lab).replace(r"\ ", r"\s+") + r"(?![A-Z0-9(])"
+                m = re.search(pat, u)
+                if m:
+                    found = (m.group(0), ri)
+                    break
+        if found:
+            rest = u.replace(found[0], " ", 1)
+            rest = re.sub(r"\b[5-9]\s*S\b", " ", rest)                     # seat count: 6S / 7S
+            rest = re.sub(r"[^A-Z0-9.+]", " ", rest)
+            rest = " ".join(w for w in rest.split() if w not in _LADDER_NOISE)
+            return (f"{mk}|{li}|{rest}", found[1])
+    return None
+
+
+def build_ladder(variant_pool: list) -> tuple:
+    """variant_pool: [(mk, model, variant, in_stock_bool)] -> (next_of, rows)
+    next_of[(mk, variant_text)] = next variant text, TOP_VARIANT or NOT_IN_LADDER (missing = not in ladder)."""
+    groups = {}
+    for mk, model, variant, in_stock in variant_pool:
+        pos = ladder_position(mk, variant, model)
+        if pos is None:
+            continue
+        g = groups.setdefault(pos[0], {})
+        names = g.setdefault(pos[1], {})
+        names[str(variant)] = (names.get(str(variant), (False, model))[0] or in_stock, model)
+    next_of, rows = {}, []
+    for gkey, ranks in groups.items():
+        ordered = sorted(ranks)
+        mk = gkey.split("|")[0]
+        for i, r in enumerate(ordered):
+            # one display name per rank; prefer the spelling that is in the stock file
+            names = ranks[r]
+            shown = sorted(names, key=lambda n: (not names[n][0], n))[0]
+            nxt = TOP_VARIANT
+            if i + 1 < len(ordered):
+                nn = ranks[ordered[i + 1]]
+                nxt = sorted(nn, key=lambda n: (not nn[n][0], n))[0]
+            rows.append({"model": names[shown][1], "variant": shown,
+                         "ladder_group": gkey.split("|", 2)[2] or "-", "rank": i + 1, "next_variant": nxt,
+                         "in_stock_file": "Yes" if names[shown][0] else "No", "_g": gkey})
+            for n in names:
+                next_of[(mk, n)] = nxt
+    rows.sort(key=lambda r: (str(r["model"]), r["_g"], r["rank"]))
+    return next_of, rows
+
+
+# --------------------------------------------------------------------------- #
 # Matching
 # --------------------------------------------------------------------------- #
 
@@ -609,6 +732,11 @@ def build_match(enq: pd.DataFrame, stk: pd.DataFrame, has_color: bool = True) ->
     alloc_variant_ct = Counter(zip(alloc["MK"], alloc["VK"]))
     alloc_exact_ct = Counter(zip(alloc["MK"], alloc["VK"], alloc["CK"]))
 
+    # ---- upgrade ladder over every variant seen in the enquiries and in stock ----
+    pool = [(m, mo, v, True) for m, mo, v in zip(stk["MK"], stk["Model"], stk["Variant"])]
+    pool += [(m, mo, v, False) for m, mo, v in zip(e["MK"], e["Model"], e["Variant"]) if not _blank(v)]
+    next_of, _ = build_ladder(pool)
+
     stock_by_model = {k: g for k, g in stk.groupby("MK", sort=False)}
     free_by_exact = {k: g for k, g in free.groupby(["MK", "VK", "CK"], sort=False)}
     free_by_variant = {k: g for k, g in free.groupby(["MK", "VK"], sort=False)}
@@ -643,7 +771,8 @@ def build_match(enq: pd.DataFrame, stk: pd.DataFrame, has_color: bool = True) ->
     cols = {k: [] for k in (
         "Resolved Stock Variant", "VK", "Note", "Free Physical", "Free Transit", "Allocated",
         "Other Color Physical", "Other Color Transit", "Other Variant Physical", "Other Variant Transit",
-        "Chassis Physical", "Chassis Transit", "Location", "Oldest Stock Age", "Match Status")}
+        "Chassis Physical", "Chassis Transit", "Location", "Oldest Stock Age", "Match Status",
+        "Next Variant", "NVK", "Next Free Physical", "Next Free Transit", "Next Chassis", "Upsell Flag")}
 
     for mk, variant, model, ck, any_c in zip(e["MK"], e["Variant"], e["Model"], e["CK"], e["any_color"]):
         resolved, vk, note = resolve(mk, variant, model)
@@ -684,6 +813,26 @@ def build_match(enq: pd.DataFrame, stk: pd.DataFrame, has_color: bool = True) ->
             # Variant given but not resolvable: still tell them what of the model is free.
             ovp, ovt = model_ct[(mk, PHYSICAL)], model_ct[(mk, TRANSIT)]
 
+        # ---- next variant (one step up) in the SAME colour the customer asked for ----
+        nxt, nvk, nfp, nft, nch, upsell = "", "", 0, 0, "", ""
+        if not blank_variant:
+            nxt = next_of.get((mk, str(variant)), NOT_IN_LADDER)
+            if nxt not in (TOP_VARIANT, NOT_IN_LADDER):
+                nvk = resolve(mk, nxt, model)[1] or "NOSTOCK"
+                if nvk != "NOSTOCK":
+                    units = free_by_variant.get((mk, nvk))
+                    if units is not None and not any_c:
+                        units = units[units["CK"] == ck]
+                    if units is not None and len(units):
+                        nfp = int((units["Stock Type"] == PHYSICAL).sum())
+                        nft = int((units["Stock Type"] == TRANSIT).sum())
+                        parts = [str(c) for c in units.loc[units["Stock Type"] == PHYSICAL, "Chassis"] if str(c).strip()]
+                        parts += [str(c) + " (In Transit)" for c in units.loc[units["Stock Type"] == TRANSIT, "Chassis"]
+                                  if str(c).strip()]
+                        nch = ", ".join(parts)
+                if nfp + nft > 0:
+                    upsell = "Upgrade also in stock" if fp + ft > 0 else "UPSELL - only upgrade in stock"
+
         if blank_variant:
             status = "Variant Not Captured"
         elif fp > 0:
@@ -700,7 +849,8 @@ def build_match(enq: pd.DataFrame, stk: pd.DataFrame, has_color: bool = True) ->
             status = "No Stock Available"
 
         for k, v in zip(cols, (resolved, vk, note, fp, ft, a, ocp, oct_, ovp, ovt,
-                               ch_p, ch_t, locs, oldest, status)):
+                               ch_p, ch_t, locs, oldest, status,
+                               nxt, nvk, nfp, nft, nch, upsell)):
             cols[k].append(v)
 
     for k, v in cols.items():
@@ -762,6 +912,7 @@ def _demand_table(e: pd.DataFrame, stk: pd.DataFrame) -> list:
             "model": model, "variant": variant, "color": color,
             "enquiries": int(d), "physical": int(p), "transit": int(t), "allocated": int(a),
             "gap_physical": int(gap_p), "gap_total": int(gap_all), "position": pos,
+            "mk": mk, "vk": vk, "ck": ck or ANY_COLOR,
         })
     order = {"Demand - No Stock": 0, "Demand - Only In Transit": 1, "Short of Physical Stock": 2,
              "Balanced": 3, "Surplus Stock": 4, "Stock - No Enquiry": 5, "Allocated Only - No Action": 6}
@@ -782,6 +933,7 @@ def _no_enquiry_table(e: pd.DataFrame, stk: pd.DataFrame) -> list:
             "model": r["Model"], "variant": r["Variant"], "color": r["Color"],
             "chassis": r["Chassis"], "stock_type": r["Stock Type"], "age": "" if pd.isna(age) else int(age),
             "location": r["Location"], "enquiries": int(n),
+            "mk": r["MK"], "vk": r["VK"], "ck": r["CK"] or ANY_COLOR,
         })
     out.sort(key=lambda x: (x["age"] == "", -(x["age"] if x["age"] != "" else 0)))
     return out
@@ -805,6 +957,7 @@ def _by_model(e: pd.DataFrame, stk: pd.DataFrame) -> list:
 
 def compute(enq: pd.DataFrame, stk: pd.DataFrame, info: dict) -> dict:
     """Everything the Enquiry Wise Stock page needs, as JSON-ready structures."""
+    stk = with_live_age(stk)
     e = build_match(enq, stk, has_color=info.get("has_color", True))
     demand = _demand_table(e, stk)
     no_enq = _no_enquiry_table(e, stk)
@@ -846,6 +999,12 @@ def compute(enq: pd.DataFrame, stk: pd.DataFrame, info: dict) -> dict:
             "location": r["Location"],
             "oldest_age": r["Oldest Stock Age"],
             "note": r["Note"],
+            "next_variant": r["Next Variant"],
+            "next_free_physical": int(r["Next Free Physical"]),
+            "next_free_transit": int(r["Next Free Transit"]),
+            "next_chassis": r["Next Chassis"],
+            "upsell_flag": r["Upsell Flag"],
+            "mk": r["MK"], "vk": r["VK"], "ck": r["CK"] or ANY_COLOR, "nvk": r["NVK"],
         })
 
     summary = {
@@ -860,7 +1019,12 @@ def compute(enq: pd.DataFrame, stk: pd.DataFrame, info: dict) -> dict:
         "stock_no_enquiry": int(sum(1 for r in no_enq if r["enquiries"] == 0)),
         "stock_aged": aged,
         "aged_days": AGED_DAYS,
+        "upsell": int((e["Upsell Flag"] == "UPSELL - only upgrade in stock").sum()),
+        "upgrade_also": int((e["Upsell Flag"] == "Upgrade also in stock").sum()),
     }
+    pool = [(m, mo, v, True) for m, mo, v in zip(stk["MK"], stk["Model"], stk["Variant"])]
+    pool += [(m, mo, v, False) for m, mo, v in zip(e["MK"], e["Model"], e["Variant"]) if not _blank(v)]
+    ladder_rows = build_ladder(pool)[1]
     return {
         "stock_loaded": True,
         "stock_info": info,
@@ -870,6 +1034,7 @@ def compute(enq: pd.DataFrame, stk: pd.DataFrame, info: dict) -> dict:
         "demand": demand,
         "no_enquiry": no_enq,
         "by_model": by_model,
+        "ladder": [{k: v for k, v in r.items() if not k.startswith("_")} for r in ladder_rows],
     }
 
 
@@ -877,7 +1042,7 @@ def empty_result(info: Optional[dict] = None) -> dict:
     return {
         "stock_loaded": False,
         "stock_info": info or {},
-        "summary": {}, "match_counts": [], "enquiries": [], "demand": [], "no_enquiry": [], "by_model": [],
+        "summary": {}, "match_counts": [], "enquiries": [], "demand": [], "no_enquiry": [], "by_model": [], "ladder": [],
     }
 
 
@@ -886,72 +1051,348 @@ def empty_result(info: Optional[dict] = None) -> dict:
 # --------------------------------------------------------------------------- #
 
 def export_workbook(result: dict, stock_units: Optional[pd.DataFrame] = None) -> bytes:
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
+    """Excel report in the Mahindra layout (clickable Summary, one sheet per match status, live
+    formulas over Stock Data) plus Kia's Next Variant / upsell columns. Test Drive plays no part."""
+    from openpyxl import Workbook
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter as L
+    from openpyxl.worksheet.hyperlink import Hyperlink
 
+    BRAND = "002C5F"
+    FONT = "Arial"
+    thin = Side(style="thin", color="BFBFBF")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="1C1C1C")
+    key_fill = PatternFill("solid", fgColor="EDEDED")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def fill(c):
+        return PatternFill("solid", fgColor=c)
+
+    TONE = {   # match status -> (fill, sheet name, short title)
+        "Exact Match - Physical": ("D9EAD3", "Exact Match Physical"),
+        "Exact Match - In Transit": ("CFE2F3", "Exact Match In Transit"),
+        "Exact Match - Allocated Only": ("FFF2CC", "Exact Match Allocated"),
+        "Variant Available - Other Color": ("FFF2CC", "Variant Avail Other Colour"),
+        "Model Available - Other Variant": ("FCE5CD", "Model Avail Other Variant"),
+        "No Stock Available": ("F4CCCC", "No Stock Available"),
+        "Variant Not Captured": ("EFEFEF", "Variant Not Captured"),
+    }
     s = result["summary"]
-    summary_rows = [["Match Status", "No. of Enquiries", "What it means"]] + \
-        [[m["status"], m["count"], m["meaning"]] for m in result["match_counts"]] + \
-        [["Total Enquiries", s["enquiries"], ""], [], ["Stock Position", "Units", ""],
-         ["Total stock units", s["stock_total"], ""],
-         ["Free - Physical", s["stock_physical"], ""],
-         ["Free - In Transit", s["stock_transit"], ""],
-         ["Allocated", s["stock_allocated"], ""],
-         ["Free stock with no matching enquiry", s["stock_no_enquiry"], ""],
-         ["Physical stock older than %d days" % s["aged_days"], s["stock_aged"], ""]]
+    info = result.get("stock_info") or {}
+    enq = result["enquiries"]
+    demand = result["demand"]
+    cover = result["no_enquiry"]
+    ladder = result.get("ladder", [])
+    n_enq, n_dem, n_cov = len(enq), len(demand), len(cover)
 
-    enq_df = pd.DataFrame(result["enquiries"]).rename(columns={
-        "date": "Enquiry Date", "customer_id": "Customer ID", "customer": "Customer Name",
-        "phone": "Phone", "consultant": "Consultant", "enquiry_status": "Enquiry Status",
-        "source": "Source", "model": "Model", "variant": "Variant (as enquired)", "fuel": "Fuel",
-        "color": "Colour", "next_followup": "Next Follow-up", "match_status": "Match Status",
-        "resolved_variant": "Resolved Stock Variant", "free_physical": "Free - Physical",
-        "free_transit": "Free - In Transit", "allocated": "Allocated",
-        "other_color": "Same Variant - Other Colour (Free)", "other_variant": "Same Model - Other Variant (Free)",
-        "chassis_physical": "Chassis (Physical)", "chassis_transit": "Chassis (In Transit)",
-        "location": "Location", "oldest_age": "Oldest Stock Age (Days)", "note": "Note"})
-    dem_df = pd.DataFrame(result["demand"]).rename(columns={
-        "model": "Model", "variant": "Variant", "color": "Colour", "enquiries": "Enquiries (Demand)",
-        "physical": "Free - Physical", "transit": "Free - In Transit", "allocated": "Allocated",
-        "gap_physical": "Gap (Physical - Enquiries)", "gap_total": "Gap (Physical + Transit - Enquiries)",
-        "position": "Position"})
-    no_df = pd.DataFrame(result["no_enquiry"]).rename(columns={
-        "model": "Model", "variant": "Variant", "color": "Colour", "chassis": "Chassis No.",
-        "stock_type": "Physical / Transit", "age": "Stock Age (Days)", "location": "Location",
-        "enquiries": "Enquiries for this Combination"})
+    su = with_live_age(stock_units) if stock_units is not None else pd.DataFrame()
+    n_stk = len(su)
+    FIRST = 5
+    last_stk = max(FIRST + n_stk - 1, FIRST)
+    last_enq = max(FIRST + n_enq - 1, FIRST)
+    last_cov = max(FIRST + n_cov - 1, FIRST)
+    last_dem = max(FIRST + n_dem - 1, FIRST)
 
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        pd.DataFrame(summary_rows).to_excel(xw, sheet_name="Summary", index=False, header=False)
-        enq_df.to_excel(xw, sheet_name="Enquiry Stock Match", index=False)
-        dem_df.to_excel(xw, sheet_name="Demand vs Stock", index=False)
-        no_df.to_excel(xw, sheet_name="Free Stock - Coverage", index=False)
-        if stock_units is not None and len(stock_units):
-            su = stock_units[["Model", "Variant", "Color", "Chassis", "Stock Type", "Alloc", "Age",
-                              "Location", "Allocated To"]].rename(columns={
-                "Color": "Colour", "Chassis": "Chassis No.", "Stock Type": "Physical / Transit",
-                "Alloc": "Allocation", "Age": "Stock Age (Days)"})
-            su.to_excel(xw, sheet_name="Stock Data", index=False)
+    wb = Workbook()
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+    ws_stk = wb.create_sheet("Stock Data")
+    ws_enq = wb.create_sheet("Enquiry Stock Match")
+    ws_dem = wb.create_sheet("Demand vs Stock")
+    ws_cov = wb.create_sheet("Ageing Stock - No Enquiry")
+    status_ws = {st: wb.create_sheet(TONE[st][1]) for st in MATCH_STATUSES}
+    ws_lad = wb.create_sheet("Variant Ladder")
+    for w in wb.worksheets:
+        w.sheet_properties.tabColor = BRAND
 
-        head_fill = PatternFill("solid", fgColor="1C1C1C")
-        for ws in xw.book.worksheets:
-            ws.sheet_properties.tabColor = "002C5F"
-            if ws.title == "Summary":
-                ws.column_dimensions["A"].width = 40
-                ws.column_dimensions["B"].width = 18
-                ws.column_dimensions["C"].width = 64
-                for cell in ws[1]:
-                    cell.font = Font(bold=True, color="FFFFFF")
-                    cell.fill = head_fill
-                continue
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = head_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            ws.freeze_panes = "A2"
-            if ws.max_row > 1:
-                ws.auto_filter.ref = ws.dimensions
-            for j, col in enumerate(ws.columns, start=1):
-                longest = max((len(str(c.value)) for c in list(col)[:200] if c.value is not None), default=8)
-                ws.column_dimensions[get_column_letter(j)].width = min(max(longest + 2, 10), 46)
-    return buf.getvalue()
+    def title(ws, text, sub=None, link=False):
+        ws["A1"] = text
+        ws["A1"].font = Font(name=FONT, size=14, bold=True, color=BRAND)
+        ws.row_dimensions[1].height = 17.4
+        if link:
+            c = ws["A2"]
+            c.value = "<< Back to Summary"
+            c.hyperlink = Hyperlink(ref="A2", location="Summary!A5", display="<< Back to Summary")
+            c.font = Font(name=FONT, size=10, color="0563C1", underline="single")
+        elif sub:
+            ws["A2"] = sub
+            ws["A2"].font = Font(name=FONT, size=9, color="555555")
+
+    def header(ws, names, row=4, height=39.6, key_from=None):
+        for j, name in enumerate(names, start=1):
+            c = ws.cell(row=row, column=j, value=name)
+            c.font = Font(name=FONT, size=10, bold=True, color="FFFFFF")
+            c.fill = head_fill
+            c.alignment = center
+            c.border = box
+        ws.row_dimensions[row].height = height
+
+    def body(ws, rows, ncols, key_from=None, start=FIRST):
+        for i, vals in enumerate(rows):
+            for j, v in enumerate(vals, start=1):
+                c = ws.cell(row=start + i, column=j, value=(None if v == "" else v))
+                c.font = Font(name=FONT, size=10)
+                c.border = box
+                if key_from and j >= key_from:
+                    c.fill = key_fill
+
+    def widths(ws, ws_widths):
+        for j, w in enumerate(ws_widths, start=1):
+            ws.column_dimensions[L(j)].width = w
+
+    def tone_rules(ws, col, last, rules):
+        for text, color in rules:
+            ws.conditional_formatting.add(
+                f"{col}{FIRST}:{col}{last}",
+                FormulaRule(formula=[f'${col}{FIRST}="{text}"'], fill=fill(color), stopIfTrue=False))
+
+    # ------------------------------------------------------------------ Stock Data
+    stock_hdr = ["Model", "Variant", "Colour", "Chassis No.", "Physical / In Transit", "Allocation",
+                 "Stock Age (Days)", "Location", "Allocated To"]
+    title(ws_stk, "STOCK DATA (source: %s)" % (info.get("file") or "stock workbook"),
+          "OPEN = free (can be offered), ALLOCATED = already committed. Physical = in the yard / showroom, "
+          "In Transit = invoiced but not yet received.")
+    header(ws_stk, stock_hdr, height=26.4)
+    rows = []
+    for _, r in su.iterrows():
+        age = r["Age"]
+        rows.append([r["Model"], r["Variant"], r["Color"], r["Chassis"], r["Stock Type"], r["Alloc"],
+                     "" if pd.isna(age) else int(age), r["Location"], r["Allocated To"]])
+    body(ws_stk, rows, 9)
+    widths(ws_stk, [16, 38, 22, 22, 18, 13, 11, 22, 24])
+    ws_stk.freeze_panes = "A5"
+    ws_stk.auto_filter.ref = f"A4:I{last_stk}"
+
+    def sd(col):
+        return f"'Stock Data'!${col}${FIRST}:${col}${last_stk}"
+
+    # ------------------------------------------------------------------ Enquiry Stock Match
+    E = ["Enquiry Date", "Customer ID", "Customer Name", "Phone", "Consultant", "Enquiry Status", "Source",
+         "Model", "Variant (as enquired)", "Fuel", "Colour", "Next Follow-up",
+         "Match Status", "Resolved Stock Variant", "Free - Physical", "Free - In Transit", "Allocated",
+         "Same Variant - Other Colour (Free)", "Same Model - Other Variant (Free)",
+         "Next Variant (One Step Up)", "Next Variant Free - Same Colour (Physical)",
+         "Next Variant Free - Same Colour (In Transit)", "Next Variant Chassis", "Upsell Flag",
+         "Chassis (Physical)", "Chassis (In Transit)", "Location", "Oldest Stock Age (Days)", "Note"]
+    col = {name: L(i) for i, name in enumerate(E, start=1)}
+    cM, cVar = col["Match Status"], col["Variant (as enquired)"]
+    cO, cP, cQ, cR, cS = col["Free - Physical"], col["Free - In Transit"], col["Allocated"], \
+        col["Same Variant - Other Colour (Free)"], col["Same Model - Other Variant (Free)"]
+    cNU, cNV, cNF = col["Next Variant Free - Same Colour (Physical)"], \
+        col["Next Variant Free - Same Colour (In Transit)"], col["Upsell Flag"]
+
+    title(ws_enq, "ENQUIRY-WISE STOCK MATCH REPORT",
+          "Every live enquiry is matched to stock on Model + Variant + Colour (Test Drive is not used). Match Status and "
+          "all quantities are calculated in Python (pandas), not Excel formulas. Next Variant = one trim "
+          "higher on the same engine, gearbox and fuel, checked in the colour the customer asked for.")
+    header(ws_enq, E)
+
+    rows_by_status = {st: [] for st in MATCH_STATUSES}
+    for i, r in enumerate(enq):
+        n = FIRST + i
+        nvk = r["nvk"]
+        blank_v = (r["variant"] == "")
+        vals = [r["date"], r["customer_id"], r["customer"], r["phone"], r["consultant"], r["enquiry_status"],
+                r["source"], r["model"], "" if blank_v else r["variant"], r["fuel"], r["color"], r["next_followup"]]
+        vals += [r["match_status"], r["resolved_variant"], r["free_physical"], r["free_transit"], r["allocated"],
+                 r["other_color"], r["other_variant"], r["next_variant"],
+                 (r["next_free_physical"] if r["nvk"] else ""), (r["next_free_transit"] if r["nvk"] else ""),
+                 r["next_chassis"], r["upsell_flag"], r["chassis_physical"], r["chassis_transit"], r["location"],
+                 r["oldest_age"], r["note"]]
+        rows_by_status[r["match_status"]].append(r)
+        for j, v in enumerate(vals, start=1):
+            c = ws_enq.cell(row=n, column=j, value=(None if v == "" else v))
+            c.font = Font(name=FONT, size=10)
+            c.border = box
+            if E[j - 1] in ("Free - Physical", "Free - In Transit", "Allocated", "Next Variant Free - Same Colour (Physical)",
+                            "Next Variant Free - Same Colour (In Transit)"):
+                c.alignment = Alignment(horizontal="center")
+    widths(ws_enq, [12, 14, 24, 14, 22, 20, 14, 14, 30, 10, 18, 13, 30, 32, 10, 10, 10, 20, 20, 32, 14, 14, 36, 28,
+                    36, 30, 18, 12, 36])
+    ws_enq.freeze_panes = "D5"
+    ws_enq.auto_filter.ref = f"A4:{L(len(E))}{last_enq}"
+    tone_rules(ws_enq, cM, last_enq, [(k, v[0]) for k, v in TONE.items()])
+    tone_rules(ws_enq, cNF, last_enq, [("UPSELL - only upgrade in stock", "FFE599")])
+
+    def enq_rng(c):
+        return f"'Enquiry Stock Match'!${c}${FIRST}:${c}${last_enq}"
+
+    # ------------------------------------------------------------------ Demand vs Stock
+    D = ["Model", "Variant", "Colour", "Enquiries (Demand)", "Free - Physical", "Free - In Transit", "Allocated",
+         "Gap (Physical - Enquiries)", "Gap (Physical + Transit - Enquiries)", "Position"]
+    title(ws_dem, "DEMAND vs STOCK - BY MODEL / VARIANT / COLOUR",
+          "Negative gap = enquiries you cannot fulfil from free stock today (physical, or physical + in transit). "
+          "Positive gap = free stock with no enquiry against it.")
+    header(ws_dem, D, height=39.6)
+    rows = []
+    for i, r in enumerate(demand):
+        n = FIRST + i
+        rows.append([r["model"], r["variant"], r["color"], r["enquiries"], r["physical"], r["transit"],
+                     r["allocated"], r["gap_physical"], r["gap_total"], r["position"]])
+    body(ws_dem, rows, 10)
+    for i in range(n_dem):
+        for j in (4, 5, 6, 7, 8, 9):
+            ws_dem.cell(row=FIRST + i, column=j).alignment = Alignment(horizontal="center")
+    widths(ws_dem, [16, 38, 22, 14, 12, 12, 11, 16, 18, 28])
+    ws_dem.freeze_panes = "A5"
+    ws_dem.auto_filter.ref = f"A4:J{last_dem}"
+    tone_rules(ws_dem, "J", last_dem, [("Demand - No Stock", "F4CCCC"), ("Demand - Only In Transit", "CFE2F3"),
+                                        ("Short of Physical Stock", "FCE5CD"), ("Balanced", "D9EAD3"),
+                                        ("Surplus Stock", "FFF2CC"), ("Stock - No Enquiry", "EFEFEF"),
+                                        ("Allocated Only - No Action", "EFEFEF")])
+
+    # ------------------------------------------------------------------ Ageing Stock - No Enquiry
+    G = ["Model", "Variant", "Colour", "Chassis No.", "Physical / In Transit", "Stock Age (Days)", "Location",
+         "Enquiries for this Combination"]
+    title(ws_cov, "FREE STOCK - ENQUIRY COVERAGE (oldest first)",
+          "Filter column H on 0 to see ageing free stock (physical or in transit) with no matching enquiry on "
+          "Model + Variant + Colour.")
+    header(ws_cov, G, height=39.6)
+    rows = []
+    for i, r in enumerate(cover):
+        n = FIRST + i
+        rows.append([r["model"], r["variant"], r["color"], r["chassis"], r["stock_type"], r["age"], r["location"],
+                     r["enquiries"]])
+    body(ws_cov, rows, 8)
+    for i in range(n_cov):
+        ws_cov.cell(row=FIRST + i, column=8).alignment = Alignment(horizontal="center")
+    widths(ws_cov, [16, 38, 22, 22, 18, 11, 22, 18])
+    ws_cov.freeze_panes = "A5"
+    ws_cov.auto_filter.ref = f"A4:H{last_cov}"
+    ws_cov.conditional_formatting.add(f"H{FIRST}:H{last_cov}",
+                                      FormulaRule(formula=[f"$H{FIRST}=0"], fill=fill("F4CCCC")))
+
+    # ------------------------------------------------------------------ one sheet per match status
+    S_COLS = ["Enquiry Date", "Customer ID", "Customer Name", "Phone", "Consultant", "Enquiry Status", "Source",
+              "Model", "Variant (as enquired)", "Fuel", "Colour", "Next Follow-up", "Resolved Stock Variant",
+              "Free - Physical", "Free - In Transit", "Allocated", "Same Variant - Other Colour (Free)",
+              "Same Model - Other Variant (Free)", "Next Variant (One Step Up)",
+              "Next Variant Free - Same Colour (Physical)", "Next Variant Free - Same Colour (In Transit)",
+              "Next Variant Chassis", "Upsell Flag", "Chassis (Physical)", "Chassis (In Transit)", "Location",
+              "Oldest Stock Age (Days)", "Note"]
+    S_KEYS = ["date", "customer_id", "customer", "phone", "consultant", "enquiry_status", "source", "model",
+              "variant", "fuel", "color", "next_followup", "resolved_variant", "free_physical", "free_transit",
+              "allocated", "other_color", "other_variant", "next_variant", "next_free_physical",
+              "next_free_transit", "next_chassis", "upsell_flag", "chassis_physical", "chassis_transit",
+              "location", "oldest_age", "note"]
+    for st, ws in status_ws.items():
+        lst = rows_by_status[st]
+        title(ws, "HYUNDAI  -  %s  (%d enquiries)" % (st.upper(), len(lst)), link=True)
+        header(ws, S_COLS)
+        body(ws, [[r[k] for k in S_KEYS] for r in lst], len(S_COLS))
+        widths(ws, [12, 14, 24, 14, 22, 20, 14, 14, 30, 10, 18, 13, 32, 10, 10, 10, 20, 20, 32, 14, 14, 36, 28,
+                    36, 30, 18, 12, 36])
+        ws.freeze_panes = "C5"
+        ws.auto_filter.ref = f"A4:{L(len(S_COLS))}{max(FIRST + len(lst) - 1, FIRST)}"
+        tone_rules(ws, "W", max(FIRST + len(lst) - 1, FIRST), [("UPSELL - only upgrade in stock", "FFE599")])
+
+    # ------------------------------------------------------------------ Variant Ladder
+    title(ws_lad, "VARIANT UPGRADE LADDER",
+          "Hyundai has no price master here, so the ladder follows the trim order set in stock_engine.py "
+          "(TRIM_LADDERS). Next Variant = the next trim up on the same engine, gearbox and fuel. Corporate, SE and "
+          "unlisted trims are left out.")
+    header(ws_lad, ["Model", "Variant", "Ladder Group (engine / gearbox / fuel)", "Ladder Rank",
+                    "Next Variant (One Step Up)", "Variant in Stock File?"], height=39.6)
+    body(ws_lad, [[r["model"], r["variant"], r["ladder_group"], r["rank"], r["next_variant"], r["in_stock_file"]]
+                  for r in ladder], 6)
+    widths(ws_lad, [18, 40, 30, 12, 40, 16])
+    ws_lad.freeze_panes = "A5"
+    ws_lad.auto_filter.ref = f"A4:F{max(FIRST + len(ladder) - 1, FIRST)}"
+
+    # ------------------------------------------------------------------ Summary
+    ws = ws_sum
+    ws.sheet_view.showGridLines = False
+    ws["A1"] = "HYUNDAI - ENQUIRY WISE STOCK REPORT"
+    ws["A1"].font = Font(name=FONT, size=16, bold=True, color=BRAND)
+    ws.row_dimensions[1].height = 21
+    ws["A2"] = ("Matched on Model + Variant + Colour (Physical and In Transit stock shown separately).  "
+                "Click any count below to see those enquiries.")
+    ws["A2"].font = Font(name=FONT, size=10, color="555555")
+    ws["A3"] = ("Source: %s (%d live enquiries, %d stock units: %d physical free, %d in transit free, %d allocated). "
+                "Test Drive is not used in the matching." % (info.get("file") or "workbook", n_enq, s["stock_total"],
+                                                              s["stock_physical"], s["stock_transit"],
+                                                              s["stock_allocated"]))
+    ws["A3"].font = Font(name=FONT, size=9, color="555555")
+    for j, name in enumerate(["Match Status", "No. of Enquiries", "What it means"], start=1):
+        c = ws.cell(row=5, column=j, value=name)
+        c.font = Font(name=FONT, size=10, bold=True, color="FFFFFF")
+        c.fill, c.alignment, c.border = head_fill, center, box
+    for i, m in enumerate(result["match_counts"]):
+        r = 6 + i
+        st = m["status"]
+        loc = "'%s'!A4" % TONE[st][1]
+        a = ws.cell(row=r, column=1, value=st)
+        a.fill = fill(TONE[st][0])
+        b = ws.cell(row=r, column=2, value=m["count"])
+        for c in (a, b):
+            c.hyperlink = Hyperlink(ref=c.coordinate, location=loc, display=st)
+            c.font = Font(name=FONT, size=10, color="0563C1", bold=(c is b), underline="single")
+            c.border = box
+        b.alignment = Alignment(horizontal="center")
+        d = ws.cell(row=r, column=3, value=m["meaning"])
+        d.font, d.border = Font(name=FONT, size=10), box
+    last_m = 5 + len(result["match_counts"])
+    tr = last_m + 1
+    for j, v in enumerate(["Total Enquiries", sum(m["count"] for m in result["match_counts"]), ""], start=1):
+        c = ws.cell(row=tr, column=j, value=v or None)
+        c.font, c.fill, c.border = Font(name=FONT, size=10, bold=True), fill("D9D9D9"), box
+        if j == 2:
+            c.alignment = Alignment(horizontal="center")
+
+    sp = tr + 2
+    for j, name in enumerate(["Stock Position", "Count"], start=1):
+        c = ws.cell(row=sp, column=j, value=name)
+        c.font, c.fill, c.alignment, c.border = Font(name=FONT, size=10, bold=True, color="FFFFFF"), head_fill, center, box
+    pos = [
+        ("Total stock units", s["stock_total"]),
+        ("Free - Physical", s["stock_physical"]),
+        ("Free - In Transit", s["stock_transit"]),
+        ("Allocated", s["stock_allocated"]),
+        ("Free stock with no matching enquiry", s["stock_no_enquiry"]),
+        ("Physical stock older than %d days" % s["aged_days"], s["stock_aged"]),
+        ("Upsell opportunities (only the upgrade is in stock)", s["upsell"]),
+        ("Upgrade also in stock alongside the exact car", s["upgrade_also"]),
+    ]
+    for i, (label, f) in enumerate(pos):
+        a = ws.cell(row=sp + 1 + i, column=1, value=label)
+        b = ws.cell(row=sp + 1 + i, column=2, value=f)
+        a.font = b.font = Font(name=FONT, size=10)
+        b.alignment = Alignment(horizontal="center")
+        a.border = b.border = box
+    r0 = sp + len(pos) + 2
+    notes = [
+        ("How to read this workbook", True),
+        ("1. Summary - this sheet. Headline counts (calculated in Python / pandas - no Excel formulas).", False),
+        ("2. Click any count in the table above to jump to a sheet listing exactly those enquiries (use << Back to Summary to return).", False),
+        ("3. Enquiry Stock Match - one row per enquiry: match status, physical / in-transit quantity, chassis numbers and the next variant up.", False),
+        ("4. Demand vs Stock - every Model/Variant/Colour combination: enquiries against free stock (physical and in transit), and the gap.", False),
+        ("5. Ageing Stock - No Enquiry - free stock oldest first, with how many enquiries each unit could serve.", False),
+        ("6. Variant Ladder - the upgrade order used for the Next Variant columns.", False),
+        ("7. Stock Data - the stock export used for the matching.", False),
+        ("", False),
+        ("The Next Variant columns (T to X on Enquiry Stock Match)", True),
+        ("Next Variant is the next trim up on the SAME engine, gearbox and fuel (see Variant Ladder).", False),
+        ("Its stock is checked in the SAME colour the customer asked for, so the consultant can offer a car they can see today.", False),
+        ('Upsell Flag reads "UPSELL - only upgrade in stock" when the exact car is not free (physical or in transit) but the next variant up is.', False),
+        ("", False),
+        ("How variants are matched", True),
+        ("The enquiry and the stock name the same car differently (\"Creta 1.5 MPi MT EX\" vs \"CRETA 1.5 MPI MT EX\"), so variants are compared on", False),
+        ("their trim codes only, after removing the model name, the emission norm and the seat count.", False),
+        ("The Resolved Stock Variant column shows exactly which stock variant each enquiry was matched to - sanity-check it for an unfamiliar model.", False),
+        ("", False),
+        ("Assumptions", True),
+        ('a. Free stock = stock that is not blocked / booked. "Physical" is in the yard or showroom, "In Transit" is invoiced but not yet received.', False),
+        ("b. Colour comes from Exterior Color Name. If an enquiry has no colour, any colour of the variant counts.", False),
+        ("c. Availability is a quantity - the same unit can serve more than one enquiry, so nothing is reserved here.", False),
+        ("d. Enquiries with no variant captured cannot be matched and are listed as Variant Not Captured.", False),
+        ("e. Test Drive (Y/N) is NOT part of the calculation: every live enquiry is matched, as in the Kia report.", False),
+    ]
+    for i, (t, bold) in enumerate(notes):
+        c = ws.cell(row=r0 + i, column=1, value=t or None)
+        c.font = Font(name=FONT, size=10, bold=bold)
+    widths(ws, [46, 18, 72])
+    return_buf = io.BytesIO()
+    wb.save(return_buf)
+    return return_buf.getvalue()
