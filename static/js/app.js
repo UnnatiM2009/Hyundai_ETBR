@@ -232,6 +232,30 @@ function doughnutChart(canvasId, labels, values, colors) {
   });
 }
 
+function stackedBarChart(canvasId, labels, datasets) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  state.charts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: datasets.map(d => ({ label: d.label, data: d.values, backgroundColor: d.color, borderWidth: 0, maxBarThickness: 90 })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12, padding: 14 } },
+        tooltip: { mode: "index", intersect: false },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: baseInkColor() } },
+        y: { stacked: true, beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } },
+      },
+    },
+  });
+}
+
 function groupedBarChart(canvasId, labels, datasets) {
   destroyChart(canvasId);
   const ctx = document.getElementById(canvasId).getContext("2d");
@@ -312,7 +336,8 @@ function renderGauge(pct, done, total) {
 /* Section loaders                                                         */
 /* ---------------------------------------------------------------------- */
 function apiParams(f) {
-  const p = { period: f.month, model: f.model, consultant: f.consultant, source: f.source };
+  const p = { period: f.month, model: f.model, consultant: f.consultant, source: f.source,
+              sub_source: f.sub_source || "all" };
   if (f.age && f.age !== "all") p.age = f.age;      // Enquiry page only
   return new URLSearchParams(p).toString();
 }
@@ -654,7 +679,7 @@ function renderComparisonTable(comparison) {
   }).join("");
 
   const f = comparison.filters || {};
-  const activeFilters = ["model", "consultant", "source"].filter(k => f[k] && f[k] !== "all");
+  const activeFilters = ["model", "consultant", "source", "sub_source"].filter(k => f[k] && f[k] !== "all");
   const filterNote = activeFilters.length
     ? ` (filtered by ${activeFilters.map(k => f[k]).join(", ")})`
     : "";
@@ -667,7 +692,8 @@ function renderComparisonTable(comparison) {
 
 async function fetchComparisonFor(prefix, mtd = false) {
   const f = readFilterBar(prefix);
-  const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source });
+  const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source,
+                                      sub_source: f.sub_source || "all" });
   if (mtd) params.set("mtd", "true");
   return getJSON(`/api/comparison?${params.toString()}`);
 }
@@ -713,6 +739,26 @@ async function populateFilterBar(prefix) {
   fillSelect(document.getElementById(`${prefix}Model`), state.filterOptions.models, "All models");
   fillSelect(document.getElementById(`${prefix}Consultant`), state.filterOptions.consultants, "All consultants");
   fillSelect(document.getElementById(`${prefix}Source`), state.filterOptions.sources, "All sources");
+  fillSubSource(prefix);
+}
+
+/* Sub-source dropdown. Every Sub-source belongs to exactly one Source (e.g. Website sits under Digital),
+   so when a Source is picked the list shows only that Source's sub-sources; with "All sources" it
+   shows them all. The current pick is kept when it is still valid, otherwise it falls back to "All". */
+function subSourceChoices(source) {
+  const fo = state.filterOptions || {};
+  if (source && source !== "all") return (fo.sub_source_map && fo.sub_source_map[source]) || [];
+  return fo.sub_sources || [];
+}
+function fillSubSource(prefix) {
+  const sel = document.getElementById(`${prefix}SubSource`);
+  if (!sel) return;
+  const source = document.getElementById(`${prefix}Source`)?.value || "all";
+  const previous = sel.value;
+  sel.innerHTML = "";
+  sel.appendChild(new Option("All sub-sources", "all"));
+  subSourceChoices(source).forEach(v => sel.appendChild(new Option(v, v)));
+  sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
 }
 
 /* Read a section's current filter selections straight from its <select>s. */
@@ -722,6 +768,7 @@ function readFilterBar(prefix) {
     model: document.getElementById(`${prefix}Model`)?.value || "all",
     consultant: document.getElementById(`${prefix}Consultant`)?.value || "all",
     source: document.getElementById(`${prefix}Source`)?.value || "all",
+    sub_source: document.getElementById(`${prefix}SubSource`)?.value || "all",
   };
 }
 
@@ -729,9 +776,12 @@ function readFilterBar(prefix) {
    once at boot for every section that has one. */
 function attachFilterBar(prefix, onChange, { extraFields = [], onReset = null } = {}) {
   if (!document.getElementById(`${prefix}Model`)) return;
-  ["Month", "Model", "Consultant", "Source", ...extraFields].forEach(suffix => {
+  ["Month", "Model", "Consultant", "Source", "SubSource", ...extraFields].forEach(suffix => {
     const el = document.getElementById(`${prefix}${suffix}`);
-    if (el) el.addEventListener("change", onChange);
+    if (!el) return;
+    // Picking a Source narrows the Sub-source list FIRST, then the page reloads (listeners run in the order added).
+    if (suffix === "Source") el.addEventListener("change", () => fillSubSource(prefix));
+    el.addEventListener("change", onChange);
   });
   const resetBtn = document.getElementById(`${prefix}Reset`);
   if (resetBtn) {
@@ -739,6 +789,9 @@ function attachFilterBar(prefix, onChange, { extraFields = [], onReset = null } 
       document.getElementById(`${prefix}Model`).value = "all";
       document.getElementById(`${prefix}Consultant`).value = "all";
       document.getElementById(`${prefix}Source`).value = "all";
+      fillSubSource(prefix);
+      const subEl = document.getElementById(`${prefix}SubSource`);
+      if (subEl) subEl.value = "all";
       const monthEl = document.getElementById(`${prefix}Month`);
       if (monthEl) monthEl.value = state.meta.current_period;
       if (onReset) onReset();
@@ -777,7 +830,7 @@ function renderBreakdownTable(prefix, section, data, activeDim) {
 async function loadBreakdownFor(prefix, section, filters) {
   const params = new URLSearchParams({
     section, period: filters.month, model: filters.model,
-    consultant: filters.consultant, source: filters.source,
+    consultant: filters.consultant, source: filters.source, sub_source: filters.sub_source || "all",
   });
   if (filters.age && filters.age !== "all") params.set("age", filters.age);
   const data = await getJSON(`/api/breakdown?${params.toString()}`);
@@ -806,7 +859,8 @@ const mvEl = (id) => document.getElementById(id);
 
 /* --- records: ONE download per window (cached; also pre-loaded when you hover a row) --- */
 function mvRecordsQuery(model, dim, filters) {
-  const p = new URLSearchParams({ model, period: filters.month, consultant: filters.consultant, source: filters.source });
+  const p = new URLSearchParams({ model, period: filters.month, consultant: filters.consultant, source: filters.source,
+                                  sub_source: filters.sub_source || "all" });
   if (dim !== "model") p.set("dim", dim);
   if (filters.age && filters.age !== "all") p.set("age", filters.age);
   return p.toString();
@@ -1000,6 +1054,7 @@ function renderModelWindow(d) {
   if (mvState.dim !== "model" && d.selected_model && d.selected_model !== "all") filterBits.push(d.selected_model);
   if (mvState.dim !== "consultant" && f.consultant && f.consultant !== "all") filterBits.push(f.consultant);
   if (mvState.dim !== "source" && f.source && f.source !== "all") filterBits.push(f.source);
+  if (f.sub_source && f.sub_source !== "all") filterBits.push(f.sub_source);
   mvEl("mvSub").textContent =
     `${MV_KIND[mvState.dim] || "Model Group"} · ${d.period_label} · ${fmtInt(k.variant_count)} variant(s) · ${fmtInt(k.enquiries)} enquiries` +
     (filterBits.length ? ` · ${filterBits.join(" · ")}` : "");
@@ -1412,7 +1467,8 @@ function fuQuery(extra = {}) {
   const f = fuFilters();
   return new URLSearchParams({
     as_of: f.from, from_date: f.from, to_date: f.to,
-    period: f.month, model: f.model, consultant: f.consultant, source: f.source, ...extra,
+    period: f.month, model: f.model, consultant: f.consultant, source: f.source,
+    sub_source: f.sub_source || "all", ...extra,
   }).toString();
 }
 
@@ -1591,7 +1647,8 @@ async function loadBookedFollowups() {
   const f = fuFilters();
   let d;
   try {
-    d = await getJSON(`/api/followup/booked?${new URLSearchParams({ model: f.model, consultant: f.consultant, source: f.source, as_of: f.to })}`);
+    d = await getJSON(`/api/followup/booked?${new URLSearchParams({ model: f.model, consultant: f.consultant, source: f.source,
+      sub_source: f.sub_source || "all", as_of: f.to })}`);
   } catch (err) {
     fbEl("fuBookNote").textContent = "Could not load booked follow-up details. Please refresh.";
     return;
@@ -1814,6 +1871,7 @@ function renderFollowupWindow() {
   if (w.dim !== "model" && f.model && f.model !== "all") bits.push(f.model);
   if (w.dim !== "consultant" && f.consultant && f.consultant !== "all") bits.push(f.consultant);
   if (f.source && f.source !== "all") bits.push(f.source);
+  if (f.sub_source && f.sub_source !== "all") bits.push(f.sub_source);
   fbEl("fbSub").textContent = bits.join(" · ");
 
   // ---- clickable tiles: total, then 0 / 1 / 2 / 3 (/ 4+) follow-ups - they add up to the total ----
@@ -2287,8 +2345,9 @@ const POSITION_TONE = {
 function stQuery() {
   const f = readFilterBar("st");
   return new URLSearchParams({
-    model: f.model, consultant: f.consultant, source: f.source,
+    model: f.model, consultant: f.consultant, source: f.source, sub_source: f.sub_source || "all",
     status: document.getElementById("stStatus").value || "all",
+    month: document.getElementById("stEnqMonth").value || "all",
   }).toString();
 }
 
@@ -2303,6 +2362,14 @@ async function loadStock() {
   statusSel.appendChild(new Option("All live enquiries", "all"));
   (data.status_options || []).forEach(s => statusSel.appendChild(new Option(s, s)));
   statusSel.value = Array.from(statusSel.options).some(o => o.value === prev) ? prev : "all";
+
+  // Enquiry-month dropdown: every month that has enquiries (newest first), with how many are matched in it.
+  const monthSel = document.getElementById("stEnqMonth");
+  const prevMonth = monthSel.value;
+  monthSel.innerHTML = "";
+  monthSel.appendChild(new Option("All months", "all"));
+  (data.months || []).slice().reverse().forEach(m => monthSel.appendChild(new Option(`${m.label} — ${fmtInt(m.matched)}`, m.value)));
+  monthSel.value = Array.from(monthSel.options).some(o => o.value === prevMonth) ? prevMonth : "all";
 
   const notice = document.getElementById("stNotice");
   const body = document.getElementById("stBody");
@@ -2329,7 +2396,9 @@ async function loadStock() {
 
   const s = data.summary;
   renderKpiGrid("stKpiGrid", [
-    { label: "Live enquiries matched", value: fmtInt(s.enquiries), color: "var(--blue)", sub: "follow-up, appointed, lead, booked" },
+    { label: "Live enquiries matched", value: fmtInt(s.enquiries), color: "var(--blue)", sub: "follow-up, appointed, lead, booked" +
+      (data.selected_month && data.selected_month !== "all"
+        ? ` · ${(data.months || []).find(m => m.value === data.selected_month)?.label || data.selected_month}` : "") },
     { label: "Exact match · Physical", value: fmtInt(s.exact_physical), color: "var(--green)", sub: "car is here — can be offered now" },
     { label: "Exact match · In transit", value: fmtInt(s.exact_transit), color: "var(--amber)", sub: "car is on the way" },
     { label: "No stock · needs indent", value: fmtInt(s.no_stock), color: "var(--red)", sub: "nothing free for this model" },
@@ -2366,9 +2435,72 @@ async function loadStock() {
     { label: "In transit (free)", values: bm.map(m => m.transit), color: cssVar("--amber") },
   ]);
 
+  renderStockMonths();
   renderStockList();
   renderStockDemand();
   renderStockCoverage();
+}
+
+/* ---- Month-wise analysis: one row per enquiry month, split by match status ---- */
+const ST_MONTH_COLS = [
+  ["Exact Match - Physical", "Exact · Physical"],
+  ["Exact Match - In Transit", "Exact · In transit"],
+  ["Exact Match - Allocated Only", "Exact · Allocated"],
+  ["Variant Available - Other Color", "Other colour"],
+  ["Model Available - Other Variant", "Other variant"],
+  ["No Stock Available", "No stock"],
+  ["Variant Not Captured", "Variant not captured"],
+];
+
+function renderStockMonths() {
+  const d = stState.data;
+  const panel = document.getElementById("stMonthPanel");
+  const rows = d.month_rows || [];
+  const tot = d.month_total;
+  if (!rows.length || !tot) { panel.style.display = "none"; return; }
+  panel.style.display = "";
+
+  const meaning = Object.fromEntries((d.match_counts || []).map(m => [m.status, m.meaning]));
+  document.getElementById("stMonthHead").innerHTML = `<tr><th>Enquiry month</th>` +
+    `<th class="num" title="Every enquiry in the file for this month, whatever its status">In file</th>` +
+    `<th class="num" title="Enquiries matched against stock on this page">Matched</th>` +
+    `<th class="num" title="In the file but not matched here (Retail, cancelled and other statuses)">Not matched</th>` +
+    ST_MONTH_COLS.map(([s, label]) => `<th class="num" title="${esc(meaning[s] || s)}">${label}</th>`).join("") +
+    `<th class="num" title="Exact match, physically in stock ÷ matched">Can serve now</th>` +
+    `<th class="num" title="Exact match, physical or in transit ÷ matched">Exact incl. transit</th>` +
+    `<th class="num" title="No stock available for the model ÷ matched">Needs indent</th></tr>`;
+
+  const cells = (r) => `<td class="num">${fmtInt(r.in_file)}</td><td class="num">${fmtInt(r.matched)}</td>` +
+    `<td class="num">${fmtInt(r.other)}</td>` +
+    ST_MONTH_COLS.map(([s]) => `<td class="num">${fmtInt(r.statuses[s] || 0)}</td>`).join("") +
+    `<td class="num">${fmtPct(r.can_serve_pct)}</td><td class="num">${fmtPct(r.exact_incl_transit_pct)}</td>` +
+    `<td class="num">${fmtPct(r.indent_pct)}</td>`;
+
+  document.getElementById("stMonthBody").innerHTML = rows.map(r => {
+    const sel = r.month && d.selected_month === r.month;
+    return `<tr class="${r.month ? "st-month-row" : ""}${sel ? " st-month-selected" : ""}" data-month="${esc(r.month)}"` +
+           `${r.month ? ` title="${sel ? "Click to show all months again" : "Click to filter this page to " + esc(r.label)}"` : ""}>` +
+           `<td>${esc(r.label)}</td>${cells(r)}</tr>`;
+  }).join("");
+  document.getElementById("stMonthFoot").innerHTML = `<tr class="st-month-total"><td>${esc(tot.label)}</td>${cells(tot)}</tr>`;
+
+  const first = rows.find(r => r.month), last = [...rows].reverse().find(r => r.month);
+  const nMonths = rows.filter(r => r.month).length;
+  const notMatched = (d.month_excluded || []).map(x => `${esc(x.status)} ${fmtInt(x.count)}`).join(" · ");
+  document.getElementById("stMonthNote").innerHTML = first
+    ? `Enquiries in the file run from <strong>${esc(first.label)}</strong>` +
+      (nMonths > 1 ? ` to <strong>${esc(last.label)}</strong>` : "") +
+      ` (${nMonths} month${nMonths === 1 ? "" : "s"}): <strong>${fmtInt(tot.in_file)}</strong> enquiries, ` +
+      `<strong>${fmtInt(tot.matched)}</strong> matched here` +
+      (tot.other ? `, <strong>${fmtInt(tot.other)}</strong> not matched${notMatched ? ` (${notMatched})` : ""}.` : ".")
+    : "";
+
+  const withData = ST_MONTH_COLS.filter(([s]) => rows.some(r => (r.statuses[s] || 0) > 0));
+  stackedBarChart("stMonthChart", rows.map(r => r.label),
+    withData.map(([s, label]) => ({ label, values: rows.map(r => r.statuses[s] || 0),
+      // The page's tones give "In transit" and "Other variant" the same orange; in a stacked bar that makes two
+      // segments indistinguishable, so "Other variant" gets a lighter tint of it (same family, clearly different).
+      color: s === "Model Available - Other Variant" ? "#F2C48F" : cssVar(MATCH_TONE[s][1]) })));
 }
 
 function renderStockList() {
@@ -2866,8 +2998,19 @@ async function boot() {
 
   // Enquiry Wise Stock page
   attachFilterBar("st", loadStock, {
-    extraFields: ["Status"],
-    onReset: () => { document.getElementById("stStatus").value = "all"; stState.match = "all"; stState.shown = 100; },
+    extraFields: ["Status", "EnqMonth"],
+    onReset: () => {
+      document.getElementById("stStatus").value = "all"; document.getElementById("stEnqMonth").value = "all";
+      stState.match = "all"; stState.shown = 100;
+    },
+  });
+  document.getElementById("stMonthBody").addEventListener("click", (e) => {
+    const tr = e.target.closest("tr.st-month-row");
+    if (!tr || !tr.dataset.month) return;
+    const sel = document.getElementById("stEnqMonth");
+    sel.value = sel.value === tr.dataset.month ? "all" : tr.dataset.month;
+    stState.shown = 100;
+    loadStock();
   });
   document.getElementById("stMore").addEventListener("click", () => { stState.shown += 100; renderStockList(); });
   document.getElementById("stExport").addEventListener("click", () => {

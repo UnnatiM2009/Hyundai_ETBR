@@ -89,6 +89,10 @@
             <label for="ovSource">Source</label>
             <select id="ovSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
+          <div class="filter-field">
+            <label for="ovSubSource">Sub-source</label>
+            <select id="ovSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
           <button id="ovReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
       </div>
@@ -196,6 +200,10 @@
             <select id="enqSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
           <div class="filter-field">
+            <label for="enqSubSource">Sub-source</label>
+            <select id="enqSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
+          <div class="filter-field filter-field--wide">
             <label for="enqAge">Enquiry date</label>
             <select id="enqAge" class="filter-select"><option value="all">All dates</option></select>
           </div>
@@ -263,6 +271,10 @@
           <div class="filter-field">
             <label for="tdSource">Source</label>
             <select id="tdSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="tdSubSource">Sub-source</label>
+            <select id="tdSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
           </div>
           <button id="tdReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
@@ -355,6 +367,10 @@
             <label for="bookSource">Source</label>
             <select id="bookSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
+          <div class="filter-field">
+            <label for="bookSubSource">Sub-source</label>
+            <select id="bookSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
           <button id="bookReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
       </div>
@@ -430,6 +446,10 @@
             <label for="salesSource">Source</label>
             <select id="salesSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
+          <div class="filter-field">
+            <label for="salesSubSource">Sub-source</label>
+            <select id="salesSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
           <button id="salesReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
       </div>
@@ -498,6 +518,10 @@
           <div class="filter-field">
             <label for="fuSource">Source</label>
             <select id="fuSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="fuSubSource">Sub-source</label>
+            <select id="fuSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
           </div>
           <button id="fuReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
@@ -632,6 +656,10 @@
           <div class="filter-field">
             <label for="exSource">Source</label>
             <select id="exSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="exSubSource">Sub-source</label>
+            <select id="exSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
           </div>
           <button id="exReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
@@ -818,6 +846,10 @@
       <div class="panel filter-panel">
         <div class="filter-bar">
           <div class="filter-field">
+            <label for="stEnqMonth">Enquiry month</label>
+            <select id="stEnqMonth" class="filter-select"><option value="all">All months</option></select>
+          </div>
+          <div class="filter-field">
             <label for="stStatus">Enquiry status</label>
             <select id="stStatus" class="filter-select"><option value="all">All live enquiries</option></select>
           </div>
@@ -833,6 +865,10 @@
             <label for="stSource">Source</label>
             <select id="stSource" class="filter-select"><option value="all">All sources</option></select>
           </div>
+          <div class="filter-field">
+            <label for="stSubSource">Sub-source</label>
+            <select id="stSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
           <button id="stReset" class="ghost-btn light-ghost">Reset filters</button>
           <button id="stExport" class="ghost-btn light-ghost">Download Excel</button>
         </div>
@@ -842,6 +878,22 @@
       <div class="kpi-grid" id="stKpiGrid"></div>
 
       <div id="stBody">
+      <div class="panel" id="stMonthPanel">
+        <div class="panel-head">
+          <h3>Month-wise analysis — enquiry month vs stock</h3>
+          <p>Every month that has enquiries in the file, each matched against the stock you hold today (Model + Variant + Colour). Click a month to filter the whole page to it; click it again to go back to all months.</p>
+        </div>
+        <p class="hint st-month-note" id="stMonthNote"></p>
+        <div class="table-wrap">
+          <table class="comparison-table" id="stMonthTable">
+            <thead id="stMonthHead"></thead>
+            <tbody id="stMonthBody"></tbody>
+            <tfoot id="stMonthFoot"></tfoot>
+          </table>
+        </div>
+        <div class="chart-box" style="height:300px;margin-top:20px"><canvas id="stMonthChart"></canvas></div>
+      </div>
+
       <div class="panel" id="stMatchPanel">
         <div class="panel-head">
           <h3>Enquiry vs stock — match result</h3>
@@ -939,6 +991,10 @@
           <div class="filter-field">
             <label for="cmpSource">Source</label>
             <select id="cmpSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cmpSubSource">Sub-source</label>
+            <select id="cmpSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
           </div>
           <button id="cmpMtd" class="ghost-btn light-ghost mtd-toggle" type="button"
                   aria-pressed="false" title="Compare the same day-range in both months (e.g. 1st-3rd vs 1st-3rd), instead of a full month vs a just-started one">

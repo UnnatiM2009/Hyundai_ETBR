@@ -351,9 +351,12 @@ canvas { max-width: 100%; }
    ========================================================================== */
 .filter-panel { padding: 18px 22px; margin-bottom: 20px; }
 .filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  /* Equal-width columns that stay aligned when the bar wraps onto a second line. Month / Model / Consultant /
+     Source / Sub-source (+ any page extras) all share the row evenly instead of each sizing itself to its
+     longest option. Buttons (Reset, MTD, Download) keep their natural width. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  align-items: end;
   gap: 16px;
   margin-bottom: 20px;
   padding-bottom: 18px;
@@ -367,7 +370,7 @@ canvas { max-width: 100%; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 168px;
+  min-width: 0;
 }
 .filter-field label {
   font-size: 0.74rem;
@@ -383,6 +386,9 @@ canvas { max-width: 100%; }
   color: var(--ink);
   font-family: var(--font-body);
 }
+.filter-field .filter-select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+/* Reset / MTD / Download fill their column exactly like the dropdowns above, so the whole bar reads as one grid. */
+.filter-bar > .ghost-btn { width: 100%; white-space: nowrap; }
 .light-ghost {
   background: var(--surface-2);
   color: var(--ink-muted);
@@ -599,7 +605,9 @@ input[type="date"].filter-select { min-height: 38px; }
   .funnel-value { font-size: 0.82rem; }
 
   .filter-panel { padding: 14px 14px 16px; }
-  .filter-bar { gap: 10px; }
+  .filter-bar { gap: 10px; grid-template-columns: 1fr 1fr; }
+  /* Reset / MTD / Download take the full row on phones (as before); the long "Enquiry date" label gets a full row too. */
+  .filter-bar > .ghost-btn, .filter-field--wide { grid-column: 1 / -1; }
   .filter-field { min-width: 0; flex: 1 1 calc(50% - 10px); }
   .filter-select, .light-ghost { width: 100%; }
 
@@ -622,6 +630,7 @@ input[type="date"].filter-select { min-height: 38px; }
 @media (max-width: 380px) {
   .kpi-grid { grid-template-columns: 1fr; }
   .filter-field { flex: 1 1 100%; }
+  .filter-bar { grid-template-columns: 1fr; }
 }
 
 .muted-sm { font-size: 0.74rem; color: var(--ink-faint); }
@@ -919,3 +928,11 @@ input[type="date"].filter-select { min-height: 38px; }
 .inv-color-row .sv-name { font-weight: 600; color: var(--blue); cursor: pointer; }
 .inv-color-row .sv-name::after { content: " \203A"; font-weight: 700; color: var(--amber); }
 .inv-color-row .inv-model-count { margin-left: 8px; }
+
+/* ---- Enquiry Wise Stock: month-wise analysis ---- */
+.st-month-note { margin: 0 0 14px; line-height: 1.5; color: var(--ink-muted); }
+#stMonthTable tbody tr.st-month-row { cursor: pointer; }
+#stMonthTable tbody tr.st-month-row:hover { background: var(--surface-2); }
+#stMonthTable tbody tr.st-month-selected { background: var(--blue-soft); font-weight: 600; }
+#stMonthTable tbody td:first-child, #stMonthTable tfoot td:first-child { white-space: nowrap; }
+#stMonthTable tfoot td { font-weight: 700; border-top: 2px solid var(--border); background: var(--surface-2); }
