@@ -695,7 +695,8 @@ async function fetchComparisonFor(prefix, mtd = false) {
   const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source,
                                       sub_source: f.sub_source || "all" });
   if (mtd) params.set("mtd", "true");
-  return getJSON(`/api/comparison?${params.toString()}`);
+  const endpoint = prefix === "cmp" ? "/api/comparison" : "/api/kpi-comparison";
+  return getJSON(`${endpoint}?${params.toString()}`);
 }
 
 async function refreshComparisonView() {
@@ -2787,6 +2788,7 @@ const SECTION_TITLES = {
 /* Navigation                                                               */
 /* ---------------------------------------------------------------------- */
 async function showSection(name, { force = false } = {}) {
+  if (state.user && !state.user.pages.includes(name)) return;
   document.querySelectorAll(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.section === name));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
   const [title, subtitle] = SECTION_TITLES[name];
@@ -2901,6 +2903,21 @@ function initUploadModal() {
 /* Boot                                                                     */
 /* ---------------------------------------------------------------------- */
 async function boot() {
+  const authResponse = await fetch('/api/auth/me');
+  if (!authResponse.ok) { window.location.replace('/login'); return; }
+  state.user = await authResponse.json();
+  document.querySelectorAll('.nav-link').forEach(btn => {
+    btn.hidden = !state.user.pages.includes(btn.dataset.section);
+    if (btn.hidden) btn.style.display = 'none';
+  });
+  document.querySelectorAll('.view').forEach(view => {
+    if (!state.user.pages.includes(view.id.replace('view-', ''))) view.style.display = 'none';
+  });
+  if (state.user.access === 'limited') {
+    document.getElementById('uploadBtn').style.display = 'none';
+    document.getElementById('refreshBtn').style.display = 'none';
+  }
+
   initTheme();
   initUploadModal();
 
@@ -3055,7 +3072,7 @@ async function boot() {
   });
 
   await loadMeta();
-  await showSection("overview");
+  await showSection(state.user.pages[0]);
 }
 
 document.addEventListener("DOMContentLoaded", boot);
