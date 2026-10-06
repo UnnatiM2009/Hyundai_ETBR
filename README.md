@@ -1,3 +1,5 @@
+> Login/access setup for this version: see LOGIN_SETUP.md. Full/Limited screen access replaces the older optional Basic Auth setup. Limited users may view any consultant; no team mapping is used.
+
 # Hyundai ETBR Analysis
 ### Unnati Hyundai — Dealership Performance Dashboard
 

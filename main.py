@@ -34,58 +34,14 @@ app = FastAPI(title="Hyundai ETBR Analysis API", version="1.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=800)   # smaller downloads on slow / mobile networks
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# --------------------------------------------------------------------------- #
-# Optional password protection
-#
-# Once this app is hosted somewhere public (Render, etc.) its URL is reachable
-# by anyone — and the data behind it is real customer names, phone numbers,
-# addresses and revenue figures. Setting DASHBOARD_USER and DASHBOARD_PASSWORD
-# as environment variables locks the whole site behind a login prompt.
-# Leave them unset (the default for local use) and the app behaves exactly as
-# before, with no login required.
-# --------------------------------------------------------------------------- #
-DASHBOARD_USER = os.environ.get("DASHBOARD_USER")
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
-
-
-class BasicAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-            return await call_next(request)  # auth not configured — open access
-
-        if request.url.path == "/api/health":
-            return await call_next(request)  # always open, for uptime/health checks
-
-        if request.url.path == "/logout":
-            return await call_next(request)  # handled by the /logout route below
-
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-                user, _, pwd = decoded.partition(":")
-                if secrets.compare_digest(user, DASHBOARD_USER) and secrets.compare_digest(pwd, DASHBOARD_PASSWORD):
-                    return await call_next(request)
-            except Exception:
-                pass
-
-        return Response(
-            status_code=401,
-            content="Authentication required.",
-            headers={"WWW-Authenticate": 'Basic realm="Hyundai ETBR Analysis"'},
-        )
-
-
-if DASHBOARD_USER and DASHBOARD_PASSWORD:
-    app.add_middleware(BasicAuthMiddleware)
-
+from auth import install_auth
 
 def _period_param(period: Optional[str]) -> Optional[str]:
     return dp.store.resolve_period(period)
@@ -117,6 +73,7 @@ def api_filters():
     return dp.store.filter_options()
 
 
+@app.get("/api/kpi-comparison")
 @app.get("/api/comparison")
 def api_comparison(
     month: Optional[str] = Query(default=None),
@@ -473,52 +430,6 @@ def health():
 
 
 # --------------------------------------------------------------------------- #
-# Logout
-#
-# The site is protected with browser (HTTP Basic) authentication, and a browser
-# keeps those credentials until it is told they are no longer valid. Replying
-# 401 + WWW-Authenticate makes it discard the saved login - so the next visit to
-# the dashboard asks for the username and password again. (If the login prompt
-# pops up on this page, just press Cancel.) With no login configured (local use)
-# there is nothing to log out of, and a short notice is shown instead.
-# --------------------------------------------------------------------------- #
-
-_LOGOUT_PAGE = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<style>
-  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-         background:#F3F5F8; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#12162B; }}
-  .card {{ background:#fff; border-radius:14px; padding:34px 38px; max-width:420px; text-align:center;
-          box-shadow:0 6px 24px rgba(15,19,38,.10); }}
-  h1 {{ font-size:1.35rem; margin:0 0 8px; }}
-  p {{ color:#5B6178; line-height:1.5; margin:0 0 22px; font-size:.95rem; }}
-  a {{ display:inline-block; background:#DD7B2E; color:#fff; text-decoration:none; font-weight:600;
-      padding:10px 22px; border-radius:8px; }}
-</style></head>
-<body><div class="card"><h1>{heading}</h1><p>{message}</p><a href="/">{button}</a></div></body></html>"""
-
-
-@app.get("/logout")
-def logout():
-    no_cache = {"Cache-Control": "no-store"}
-    if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-        return HTMLResponse(_LOGOUT_PAGE.format(
-            title="Logout", heading="No login is set up",
-            message="This dashboard is running without a username and password, so there is nothing to log out of.",
-            button="Back to dashboard"), headers=no_cache)
-    return HTMLResponse(
-        _LOGOUT_PAGE.format(
-            title="Logged out", heading="You have been logged out",
-            message="Your login has been cleared from this browser. Press Cancel if a sign-in box appears. "
-                    "To use the dashboard again you will be asked for your username and password.",
-            button="Sign in again"),
-        status_code=401,
-        headers={**no_cache, "WWW-Authenticate": 'Basic realm="Hyundai ETBR Analysis"'},
-    )
-
-
-# --------------------------------------------------------------------------- #
 # Frontend (static files)
 # --------------------------------------------------------------------------- #
 
@@ -545,3 +456,5 @@ async def not_found(request, exc):
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=404, content={"detail": "Not found"})
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+install_auth(app, STATIC_DIR)
