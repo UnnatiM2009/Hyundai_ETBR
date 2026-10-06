@@ -96,6 +96,8 @@ revenue, amount received, mode of purchase, invoice-to-delivery days.
 
 ## 7. What each page shows
 
+Every page that has a **Source** filter also has a **Sub-source** filter next to it (see V18 changes).
+
 - **Overview** — KPIs (with vs-last-month deltas), Enquiry → Booking → Retail funnel,
   test-drive gauge, top models, source mix, conversion tables.
 - **Enquiry** — status breakdown, **Appointed Enquiry** card, ageing, cities, lost reasons.
@@ -421,3 +423,55 @@ with whatever the window was already scoped to:
 - In all three, picking a value from one dropdown narrows what the next one offers (e.g. picking a Model
   narrows the Variant list to that model's variants), and every dropdown always has an "All ..." option to
   go back. Nothing about the pages behind the pop-ups, or any other part of the dashboard, changed.
+
+## V18 changes
+
+**Sub-source dropdown on every page**
+
+- A **Sub-source** dropdown now sits right after **Source** in the filter bar of Overview, Enquiry, Enquiry
+  Follow-up, Test Drive, Booking, Retails, Exchange, Enquiry Wise Stock and Month Comparison. It reads the
+  `Sub-source` column of the Enquiry sheet (27 values in the current file). Vehicle Stock has no Source filter
+  (stock has no enquiry data), so it has no Sub-source either, and the three pop-up windows do not get the dropdown.
+- **It follows Source.** Every Sub-source belongs to exactly one Source (Website sits under Digital, Walkin under
+  Walkin, SC own source under Field Generation ...). Pick a Source and the Sub-source list narrows to that Source's
+  sub-sources; pick "All sources" and the full list returns. If you change the Source and the Sub-source you had
+  chosen no longer belongs to it, the Sub-source goes back to "All sub-sources" and the page reloads. The Source ->
+  Sub-source map is built from your data (`/api/filters` -> `sub_source_map`), nothing is hard-coded.
+- **It combines with the other filters** (Month, Model, Consultant, Source, Enquiry date ...) and "Reset filters" clears it.
+  It works through the same code path as Source: `sub_source` is accepted by every API route that accepts `source`
+  (`DashboardData._filter()` / `view()` do the filtering), including the Enquiry Wise Stock Excel download, so the
+  file you download matches what is on screen. A workbook with no `Sub-source` column simply shows an empty list.
+- **Pop-ups:** no dropdown inside them, but they describe the same filtered page. If the page is filtered to
+  "Website" and you open the Model Window, its numbers match the page and its subtitle names "Website".
+- **Filter bars now use an aligned grid** (`.filter-bar` in `style.css`): the dropdowns share each row evenly and,
+  when the bar has to wrap, keep their columns aligned (it used to wrap into ragged rows of different widths). On
+  phones it keeps the earlier 2-column layout with Reset / MTD / Download on their own full-width rows.
+- Nothing else changed: with Sub-source left on "All", every API response is identical to V17 apart from one new
+  `sub_source` entry in the Month Comparison `filters` block.
+
+## V19 changes
+
+**Enquiry Wise Stock - month-wise analysis**
+
+- The page used to match every live enquiry from every month together, with no way to see which months were in
+  the file. It now shows them. In the current file the enquiries cover **September 2026** (734 in the file, 687
+  matched) and **October 2026** (59, all matched): 793 enquiries, 746 matched, 47 not matched.
+- **Enquiry month** dropdown (first in the filter bar): "All months" plus every month that has enquiries, newest
+  first, each with its matched count. "All months" is the default and gives exactly the numbers the page gave
+  before. Picking a month filters the whole page - cards, charts, the enquiry list, Demand vs Stock, free-stock
+  coverage - and the **Download Excel** file, so the download always matches the screen. It combines with Status,
+  Model, Consultant, Source and Sub-source, and "Reset filters" clears it.
+- **Month-wise analysis** panel (new, right under the KPI cards): one row per enquiry month and an "All months"
+  total row - enquiries in the file, matched, not matched, how the matched ones split across the seven match
+  statuses (Exact Physical / In transit / Allocated, Other colour, Other variant, No stock, Variant not captured),
+  and three rates: **Can serve now** (exact car physically here), **Exact incl. transit**, **Needs indent**
+  (no stock for the model). A stacked chart shows the same split per month, and a note spells out what was
+  not matched (for example Retail 30, Appointed Enquiry Cancel 6 ...). Click a month row to filter the page to
+  it; click it again to go back. The panel always shows every month, even while one is picked.
+- Stock is today's snapshot, so an older month's enquiries are checked against the stock held now ("could we
+  serve September's enquiries today?"). Matching rules are unchanged - the month figures come from the same
+  `build_match()` as the rest of the page, so a month's row equals what the page shows when filtered to it.
+- Backend: `/api/enquiry-stock` and `/api/enquiry-stock/export` accept `month=YYYY-MM`; the response gains
+  `selected_month`, `months`, `month_rows`, `month_total`, `month_excluded` (everything it returned before is
+  untouched). The per-month counts are remembered per filter set (`_MONTH_MATCH_CACHE`) so clicking between
+  months is instant after the page has opened.

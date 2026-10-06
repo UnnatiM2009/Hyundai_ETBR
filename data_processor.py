@@ -74,7 +74,7 @@ STOCK_MATCH_STATUSES = ["Enquiry Follow up", "Appointed Enquiry", "Lead", "Booke
 _TEXT_COLUMNS = {
     "Customer ID": "", "Name of the Customer": "", "Contact Number": "", "Model": "Unknown",
     "Variant": "", "Fuel type": "", "Color": "", "Enquiry Status": "Unknown", "Source": "Unknown",
-    "Consultant Name": "Unassigned", "City": "Unknown", "lost reason": "", "Lost Remark": "",
+    "Sub-source": "Unknown", "Consultant Name": "Unassigned", "City": "Unknown", "lost reason": "", "Lost Remark": "",
     "Consultant Remarks": "",
 }
 _YN_COLUMNS = ["Exchange opted", "Scrap Y/N", "Scrap Through Hyundai Y/N", "Present Car"]
@@ -272,11 +272,12 @@ class DashboardData:
             else pd.Series("N", index=df.index)
         df["Test Drive"] = td.where(td.isin(["Y", "N"]), "N")
 
-        for name in ("Enquiry Status", "Model", "Source", "Variant", "Color", "Fuel type"):
+        for name in ("Enquiry Status", "Model", "Source", "Sub-source", "Variant", "Color", "Fuel type"):
             df[name] = df[name].map(_text)
         df["Enquiry Status"] = df["Enquiry Status"].replace("", "Unknown")
         df["Model"] = df["Model"].replace("", "Unknown")
         df["Source"] = df["Source"].replace("", "Unknown")
+        df["Sub-source"] = df["Sub-source"].replace("", "Unknown")
         df["Consultant Name"] = df["Consultant Name"].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
         df["City"] = df["City"].fillna("Unknown").astype(str).str.strip().replace("", "Unknown")
         df["Customer ID"] = df["Customer ID"].map(_text)
@@ -390,7 +391,8 @@ class DashboardData:
     def _filter(self, df: pd.DataFrame, period: Optional[str],
                 model: Optional[str] = None, consultant: Optional[str] = None,
                 source: Optional[str] = None, month_col: str = "Month",
-                age: Optional[str] = None, mtd_day: Optional[int] = None) -> pd.DataFrame:
+                age: Optional[str] = None, mtd_day: Optional[int] = None,
+                sub_source: Optional[str] = None) -> pd.DataFrame:
         """Filter by month (on `month_col`) plus the optional Model / Consultant /
         Source drill-down filters. `mtd_day`, when given, additionally keeps only
         rows whose underlying date falls on or before that day-of-month - this is
@@ -409,6 +411,8 @@ class DashboardData:
             d = d[d["Consultant Name"] == consultant]
         if source and source != "all":
             d = d[d["Source"] == source]
+        if sub_source and sub_source != "all":
+            d = d[d["Sub-source"] == sub_source]
         if age and age != "all":
             d = d[_age_mask(d, age)]
         if mtd_day is not None:
@@ -430,14 +434,16 @@ class DashboardData:
 
     def view(self, kind: str, period: Optional[str], model: Optional[str] = None,
              consultant: Optional[str] = None, source: Optional[str] = None,
-             age: Optional[str] = None, mtd_day: Optional[int] = None) -> pd.DataFrame:
+             age: Optional[str] = None, mtd_day: Optional[int] = None,
+             sub_source: Optional[str] = None) -> pd.DataFrame:
         flag, month_col = self._KIND_SPEC[kind]
         df = self.enquiry
         if df.empty:
             return df
         if flag:
             df = df[df[flag]]
-        return self._filter(df, period, model, consultant, source, month_col=month_col, age=age, mtd_day=mtd_day)
+        return self._filter(df, period, model, consultant, source, month_col=month_col, age=age, mtd_day=mtd_day,
+                            sub_source=sub_source)
 
     # ------------------------------------------------------------------- #
     def filter_options(self) -> dict:
@@ -446,7 +452,8 @@ class DashboardData:
         clean = lambda vals: sorted(v for v in vals if v and v.lower() not in ("nan", "none", "", "unknown"))
         ages = {"buckets": [{"value": v, "label": l} for v, l, _lo, _hi in AGE_BUCKETS], "days": []}
         if e.empty:
-            return {"models": [], "consultants": [], "sources": [], "ages": ages, "enquiry_dates": {}}
+            return {"models": [], "consultants": [], "sources": [], "sub_sources": [], "sub_source_map": {},
+                    "ages": ages, "enquiry_dates": {}}
         ages["days"] = sorted(int(x) for x in e["enquiry aging days"].dropna().unique())
         # every Enquiry Date that has enquiries, grouped by month - feeds the Enquiry page's date dropdown
         ed = e["Enquiry Date"].dropna().dt.normalize().drop_duplicates().sort_values()
@@ -459,6 +466,12 @@ class DashboardData:
             "models": clean(set(e["Model"].dropna().astype(str).str.strip())),
             "consultants": clean(set(e["Consultant Name"].dropna().astype(str).str.strip())),
             "sources": clean(set(e["Source"].dropna().astype(str).str.strip())),
+            "sub_sources": clean(set(e["Sub-source"].dropna().astype(str).str.strip())),
+            # each Sub-source sits under one Source, so picking a Source narrows the Sub-source list
+            "sub_source_map": {
+                str(s).strip(): clean(set(g["Sub-source"].dropna().astype(str).str.strip()))
+                for s, g in e.groupby("Source")
+            },
         }
 
     # ------------------------------------------------------------------- #
@@ -487,13 +500,14 @@ store = DashboardData()
 
 def compute_kpis(period: Optional[str], model: Optional[str] = None,
                  consultant: Optional[str] = None, source: Optional[str] = None,
-                 age: Optional[str] = None, mtd_day: Optional[int] = None) -> dict:
-    enq = store.view("enquiry", period, model, consultant, source, age=age, mtd_day=mtd_day)
-    booked = store.view("booked", period, model, consultant, source, age=age, mtd_day=mtd_day)
-    retail = store.view("retail", period, model, consultant, source, age=age, mtd_day=mtd_day)
-    b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
-    f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
-    a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day)
+                 age: Optional[str] = None, mtd_day: Optional[int] = None,
+                 sub_source: Optional[str] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    booked = store.view("booked", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    retail = store.view("retail", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
 
     total_enquiries = len(enq)
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
@@ -535,7 +549,7 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
 
 def compute_comparison(period: Optional[str] = None, model: Optional[str] = None,
                        consultant: Optional[str] = None, source: Optional[str] = None,
-                       mtd: bool = False) -> dict:
+                       mtd: bool = False, sub_source: Optional[str] = None) -> dict:
     """period, when given, is the 'current' month to compare ('YYYY-MM'); the
     previous month is always the calendar month right before it.
 
@@ -551,8 +565,8 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
 
     mtd_day = dt.date.today().day if mtd else None
 
-    current = compute_kpis(current_period, model, consultant, source, mtd_day=mtd_day)
-    previous = compute_kpis(previous_period, model, consultant, source, mtd_day=mtd_day)
+    current = compute_kpis(current_period, model, consultant, source, mtd_day=mtd_day, sub_source=sub_source)
+    previous = compute_kpis(previous_period, model, consultant, source, mtd_day=mtd_day, sub_source=sub_source)
 
     metrics = [
         ("total_enquiries", "Total Enquiries"),
@@ -592,7 +606,8 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
         "current_period_label": current_label,
         "previous_period": previous_period,
         "previous_period_label": previous_label,
-        "filters": {"model": model or "all", "consultant": consultant or "all", "source": source or "all"},
+        "filters": {"model": model or "all", "consultant": consultant or "all", "source": source or "all",
+                    "sub_source": sub_source or "all"},
         "mtd": mtd,
         "mtd_day": mtd_day,
         "rows": rows,
@@ -617,8 +632,9 @@ def _daily_counts(df: pd.DataFrame, date_col: str) -> list:
 
 
 def compute_test_drive_analytics(period: Optional[str], model: Optional[str] = None,
-                                 consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
-    enq = store.view("enquiry", period, model, consultant, source)
+                                 consultant: Optional[str] = None, source: Optional[str] = None,
+                                 sub_source: Optional[str] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, sub_source=sub_source)
     if enq.empty:
         return {"done_vs_not": {"Y": 0, "N": 0}, "by_model": [], "by_consultant": [],
                 "by_source": [], "daily_trend": [], "funnel": []}
@@ -673,10 +689,10 @@ def _year_bucket(y) -> str:
 
 def compute_exchange_analytics(period: Optional[str], model: Optional[str] = None,
                                consultant: Optional[str] = None, source: Optional[str] = None,
-                               scope: str = "exchange", limit: int = 1000) -> dict:
+                               scope: str = "exchange", limit: int = 1000, sub_source: Optional[str] = None) -> dict:
     """Exchange page: Exchange opted / Scrap Y/N / Scrap Through Hyundai Y/N / Present Car /
     Maker Name / Maker Model / Model Year, read straight from the Enquiry sheet."""
-    enq = store.view("enquiry", period, model, consultant, source)
+    enq = store.view("enquiry", period, model, consultant, source, sub_source=sub_source)
     empty = {
         "kpis": {"total_enquiries": 0, "exchange_opted": 0, "exchange_rate": 0.0, "present_car": 0,
                  "scrap_yes": 0, "scrap_no": 0, "scrap_hyundai_yes": 0, "exchange_converted": 0,
@@ -765,8 +781,8 @@ def compute_exchange_analytics(period: Optional[str], model: Optional[str] = Non
 
 def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None,
                               consultant: Optional[str] = None, source: Optional[str] = None,
-                 age: Optional[str] = None) -> dict:
-    enq = store.view("enquiry", period, model, consultant, source, age=age)
+                 age: Optional[str] = None, sub_source: Optional[str] = None) -> dict:
+    enq = store.view("enquiry", period, model, consultant, source, age=age, sub_source=sub_source)
     if enq.empty:
         return {"status_breakdown": [], "source_breakdown": [], "lost_reasons": [],
                 "city_breakdown": [], "aging_buckets": [], "model_breakdown": []}
@@ -795,11 +811,12 @@ def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None
 
 
 def compute_booking_analytics(period: Optional[str], model: Optional[str] = None,
-                              consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+                              consultant: Optional[str] = None, source: Optional[str] = None,
+                              sub_source: Optional[str] = None) -> dict:
     """Bookings = Enquiry Status 'Booked' (by Booking Date).
     Booking cancels = 'Booking Cancel' (by Lost Date)."""
-    book = store.view("booked", period, model, consultant, source)
-    cancel = store.view("booking_cancel", period, model, consultant, source)
+    book = store.view("booked", period, model, consultant, source, sub_source=sub_source)
+    cancel = store.view("booking_cancel", period, model, consultant, source, sub_source=sub_source)
 
     cancel_reasons = []
     if not cancel.empty:
@@ -819,9 +836,10 @@ def compute_booking_analytics(period: Optional[str], model: Optional[str] = None
 
 
 def compute_sales_analytics(period: Optional[str], model: Optional[str] = None,
-                            consultant: Optional[str] = None, source: Optional[str] = None) -> dict:
+                            consultant: Optional[str] = None, source: Optional[str] = None,
+                            sub_source: Optional[str] = None) -> dict:
     """Retails = Enquiry Status 'Retail' - a vehicle sold (by Retail date)."""
-    sales = store.view("retail", period, model, consultant, source)
+    sales = store.view("retail", period, model, consultant, source, sub_source=sub_source)
     avg_days = float(sales["retail_days"].mean()) if not sales.empty else 0.0
     if pd.isna(avg_days):
         avg_days = 0.0
@@ -993,13 +1011,13 @@ def _breakdown_rows_conversion(enq, book, retail, dimension, limit):
 
 def compute_breakdown_tables(section: str, period: Optional[str], model: Optional[str] = None,
                              consultant: Optional[str] = None, source: Optional[str] = None,
-                             limit: int = 20, age: Optional[str] = None) -> dict:
+                             limit: int = 20, age: Optional[str] = None, sub_source: Optional[str] = None) -> dict:
     """Returns {'by_model': [...], 'by_consultant': [...], 'by_source': [...]}
     with section-appropriate columns, for the 'Breakdown' table on every page."""
-    enq = store.view("enquiry", period, model, consultant, source, age=age)
-    book = store.view("booked", period, model, consultant, source, age=age)
-    retail = store.view("retail", period, model, consultant, source, age=age)
-    cancel = store.view("booking_cancel", period, model, consultant, source, age=age)
+    enq = store.view("enquiry", period, model, consultant, source, age=age, sub_source=sub_source)
+    book = store.view("booked", period, model, consultant, source, age=age, sub_source=sub_source)
+    retail = store.view("retail", period, model, consultant, source, age=age, sub_source=sub_source)
+    cancel = store.view("booking_cancel", period, model, consultant, source, age=age, sub_source=sub_source)
 
     result = {}
     for dimension in ("model", "consultant", "source"):
@@ -1066,7 +1084,8 @@ def _pick_variants(df: pd.DataFrame, variants) -> pd.DataFrame:
 def compute_model_variant_detail(model: str, period: Optional[str], consultant: Optional[str] = None,
                                  source: Optional[str] = None, age: Optional[str] = None,
                                  variants: Optional[list] = None, ages: Optional[list] = None,
-                                 dim: str = "model", model_filter: Optional[str] = None) -> dict:
+                                 dim: str = "model", model_filter: Optional[str] = None,
+                                 sub_source: Optional[str] = None) -> dict:
     """Variant-wise detail window.
 
     dim == "model"      -> `model` is the clicked model (original behaviour).
@@ -1084,7 +1103,7 @@ def compute_model_variant_detail(model: str, period: Optional[str], consultant: 
         q_model, q_cons, q_src = value, consultant, source
     multi_model = dim != "model"
     views = {
-        k: _with_variant(store.view(k, period, q_model, q_cons, q_src, age=age), multi_model)
+        k: _with_variant(store.view(k, period, q_model, q_cons, q_src, age=age, sub_source=sub_source), multi_model)
         for k in ("enquiry", "booked", "retail")
     }
 
@@ -1188,7 +1207,7 @@ def compute_model_variant_detail(model: str, period: Optional[str], consultant: 
 
 def compute_model_variant_records(model: str, period: Optional[str], consultant: Optional[str] = None,
                                   source: Optional[str] = None, age: Optional[str] = None,
-                                  dim: str = "model") -> dict:
+                                  dim: str = "model", sub_source: Optional[str] = None) -> dict:
     """Compact record set behind the detail window.
 
     The window used to ask the server for a fresh calculation on every click.  Instead the
@@ -1211,7 +1230,7 @@ def compute_model_variant_records(model: str, period: Optional[str], consultant:
 
     parts = []
     for kind in ("enquiry", "booked", "retail"):
-        df = store.view(kind, period, None, q_cons, q_src, age=age)
+        df = store.view(kind, period, None, q_cons, q_src, age=age, sub_source=sub_source)
         if df.empty:
             continue
         var = df["Variant"].map(_text).replace("", VARIANT_BLANK)
@@ -1294,25 +1313,26 @@ def _range(as_of: Optional[str], from_date: Optional[str], to_date: Optional[str
 
 
 def _cancel_view(kind: str, period: Optional[str], model, consultant, source,
-                 lo: pd.Timestamp, hi: pd.Timestamp, use_range: bool) -> pd.DataFrame:
+                 lo: pd.Timestamp, hi: pd.Timestamp, use_range: bool,
+                 sub_source: Optional[str] = None) -> pd.DataFrame:
     """Cancelled enquiries for the follow-up page. With a From / To range they are the ones whose Lost Date
     falls between the two dates (so the cancel numbers always match the dates on the page); without a
     range (old callers) they are counted by month as before."""
     if not use_range:
-        return store.view(kind, period, model, consultant, source)
-    df = store.view(kind, None, model, consultant, source)
+        return store.view(kind, period, model, consultant, source, sub_source=sub_source)
+    df = store.view(kind, None, model, consultant, source, sub_source=sub_source)
     if df.empty:
         return df
     ld = df["Lost Date"].dt.normalize()
     return df[(ld >= lo) & (ld <= hi)]
 
 
-def _followup_base(model, consultant, source) -> pd.DataFrame:
+def _followup_base(model, consultant, source, sub_source=None) -> pd.DataFrame:
     """Open follow-ups: rows whose status is still 'Enquiry Follow up' - every month."""
     df = store.enquiry
     if df.empty:
         return df
-    return store._filter(df[df["is_followup"]], None, model, consultant, source)
+    return store._filter(df[df["is_followup"]], None, model, consultant, source, sub_source=sub_source)
 
 
 def _kind_for(date: pd.Timestamp, ref: pd.Timestamp, hi: Optional[pd.Timestamp] = None) -> str:
@@ -1324,10 +1344,10 @@ def _kind_for(date: pd.Timestamp, ref: pd.Timestamp, hi: Optional[pd.Timestamp] 
 def compute_followup(as_of: Optional[str], period: Optional[str], model: Optional[str] = None,
                      consultant: Optional[str] = None, source: Optional[str] = None,
                      window_days: int = 14, from_date: Optional[str] = None,
-                     to_date: Optional[str] = None) -> dict:
+                     to_date: Optional[str] = None, sub_source: Optional[str] = None) -> dict:
     ref, hi = _range(as_of, from_date, to_date)          # ref = From date, hi = To date
     use_range = bool(from_date or to_date)
-    fu = _followup_base(model, consultant, source)
+    fu = _followup_base(model, consultant, source, sub_source)
     nd = fu["Next Followup Date"] if not fu.empty else pd.Series(dtype="datetime64[ns]")
 
     today_df = fu[(nd >= ref) & (nd <= hi)] if not fu.empty else fu     # due between From and To
@@ -1336,8 +1356,8 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
     next7 = upcoming[upcoming["Next Followup Date"] <= hi + pd.Timedelta(days=7)] if not upcoming.empty else upcoming
     no_date = fu[nd.isna()] if not fu.empty else fu
 
-    f_cancel = _cancel_view("followup_cancel", period, model, consultant, source, ref, hi, use_range)
-    a_cancel = _cancel_view("appointed_cancel", period, model, consultant, source, ref, hi, use_range)
+    f_cancel = _cancel_view("followup_cancel", period, model, consultant, source, ref, hi, use_range, sub_source)
+    a_cancel = _cancel_view("appointed_cancel", period, model, consultant, source, ref, hi, use_range, sub_source)
 
     kpis = {
         "open_followups": int(len(fu)),
@@ -1416,7 +1436,8 @@ def compute_followup(as_of: Optional[str], period: Optional[str], model: Optiona
 def compute_followup_list(scope: str, as_of: Optional[str], date: Optional[str], period: Optional[str],
                           model: Optional[str] = None, consultant: Optional[str] = None,
                           source: Optional[str] = None, limit: int = 1000,
-                          from_date: Optional[str] = None, to_date: Optional[str] = None) -> dict:
+                          from_date: Optional[str] = None, to_date: Optional[str] = None,
+                          sub_source: Optional[str] = None) -> dict:
     """The customer rows behind a follow-up number.
 
     scope: today (= due between the From and To dates) | pending (before From) | upcoming (after To)
@@ -1426,11 +1447,11 @@ def compute_followup_list(scope: str, as_of: Optional[str], date: Optional[str],
     cancel_scopes = {"followup_cancel", "appointed_cancel"}
 
     if scope in cancel_scopes:
-        df = _cancel_view(scope, period, model, consultant, source, ref, hi, bool(from_date or to_date))
+        df = _cancel_view(scope, period, model, consultant, source, ref, hi, bool(from_date or to_date), sub_source)
         if not df.empty:
             df = df.sort_values("Lost Date", ascending=False, na_position="last")
     else:
-        df = _followup_base(model, consultant, source)
+        df = _followup_base(model, consultant, source, sub_source)
         if not df.empty:
             nd = df["Next Followup Date"]
             if scope == "today":
@@ -1562,7 +1583,8 @@ def _bucket_of(n) -> Optional[int]:
 
 
 def compute_booked_followups(model: Optional[str] = None, consultant: Optional[str] = None,
-                             source: Optional[str] = None, as_of: Optional[str] = None) -> dict:
+                             source: Optional[str] = None, as_of: Optional[str] = None,
+                             sub_source: Optional[str] = None) -> dict:
     """Every enquiry placed in a follow-up group (0 / 1 / 2 / 3 / 4+), so the groups add up to the
     total enquiries. `c0..c4` = all enquiries by follow-ups; `b0..b4` = only the BOOKED ones (the cards).
 
@@ -1574,7 +1596,7 @@ def compute_booked_followups(model: Optional[str] = None, consultant: Optional[s
     base = store.enquiry
     if base.empty:
         return out
-    allq = store._filter(base, None, model, consultant, source)          # every enquiry
+    allq = store._filter(base, None, model, consultant, source, sub_source=sub_source)          # every enquiry
     if allq.empty:
         return out
 
@@ -1657,7 +1679,7 @@ def compute_booked_followups(model: Optional[str] = None, consultant: Optional[s
 # Enquiry Wise Stock page (Physical vs In Transit) - matching lives in stock_engine.py
 # --------------------------------------------------------------------------- #
 
-def _stock_enquiries(model, consultant, source, status) -> pd.DataFrame:
+def _stock_enquiries(model, consultant, source, status, sub_source=None, month=None) -> pd.DataFrame:
     df = store.enquiry
     if df.empty:
         return df
@@ -1665,11 +1687,106 @@ def _stock_enquiries(model, consultant, source, status) -> pd.DataFrame:
     if status and status != "all":
         wanted = {_skey(status)}
     df = df[df["Status Key"].isin(wanted)]
-    return store._filter(df, None, model, consultant, source)
+    period = month if month and month != "all" else None        # enquiry month ('YYYY-MM'); None = every month
+    return store._filter(df, period, model, consultant, source, sub_source=sub_source)
+
+
+def _stock_month_rates(statuses: dict, matched: int) -> dict:
+    ph = statuses.get("Exact Match - Physical", 0)
+    tr = statuses.get("Exact Match - In Transit", 0)
+    return {
+        "can_serve_pct": _safe_div(ph, matched),                 # an exact car is physically here
+        "exact_incl_transit_pct": _safe_div(ph + tr, matched),   # ...or exactly on the way
+        "indent_pct": _safe_div(statuses.get("No Stock Available", 0), matched),   # nothing free for the model
+    }
+
+
+_MONTH_MATCH_CACHE: dict = {}      # (filters..., data load time) -> {month: Counter(match status)}
+
+
+def _enquiry_month_block(model, consultant, source, status, sub_source, month, info, rows=None) -> dict:
+    """Month-by-month analysis for the Enquiry Wise Stock page.
+
+    For every enquiry month in the file it reports how many enquiries are in the file, how many the page
+    matches against stock, and how those matched enquiries split across the seven match statuses - using the
+    SAME build_match() the page already uses, so a month's numbers always add up to the page's own totals.
+    It is deliberately computed WITHOUT the month filter, so picking one month still leaves the whole
+    month-by-month picture visible (the picked month is highlighted on screen). Stock is today's snapshot,
+    so an older month's enquiries are checked against the stock held now."""
+    from collections import Counter
+    sel = month if month and month != "all" else "all"
+    block = {"selected_month": sel, "months": [], "month_rows": [], "month_total": None, "month_excluded": []}
+    e = store.enquiry
+    if e.empty or store.stock.empty:
+        return block
+    in_file = store._filter(e, None, model, consultant, source, sub_source=sub_source)          # every status
+    if in_file.empty:
+        return block
+    matched = _stock_enquiries(model, consultant, source, status, sub_source)                    # every month
+
+    statuses = list(se.MATCH_STATUSES)
+    # The per-month match counts depend only on the Model / Consultant / Source / Sub-source / Status filters
+    # and on the loaded data - not on which month is picked - so they are remembered. Opening the page seeds
+    # them (from the page's own match rows); clicking between months afterwards then costs nothing extra.
+    norm = lambda v: v if v and v != "all" else None
+    cache_key = (norm(model), norm(consultant), norm(source), norm(status), norm(sub_source), store.last_loaded)
+    by_month = _MONTH_MATCH_CACHE.get(cache_key)
+    if by_month is None:
+        by_month = {}
+        if sel == "all" and rows is not None:
+            # No month picked: `rows` are already the page's own match results for exactly this set of
+            # enquiries, so reuse them rather than matching every enquiry a second time.
+            for r in rows:
+                d = r.get("date") or ""                                # dd/mm/yyyy
+                m = f"{d[6:10]}-{d[3:5]}" if len(d) == 10 else ""
+                by_month.setdefault(m, Counter())[r["match_status"]] += 1
+        elif not matched.empty:
+            mm = se.build_match(matched, se.with_live_age(store.stock), has_color=info.get("has_color", True))
+            mkey = mm["Enquiry Date"].dt.strftime("%Y-%m").fillna("")
+            for m, st in zip(mkey, mm["Match Status"]):
+                by_month.setdefault(m, Counter())[st] += 1
+        if len(_MONTH_MATCH_CACHE) >= 16:
+            _MONTH_MATCH_CACHE.pop(next(iter(_MONTH_MATCH_CACHE)))
+        _MONTH_MATCH_CACHE[cache_key] = by_month
+
+    in_month = in_file["Month"].fillna("")
+    present = set(in_month.unique()) | set(by_month)
+    keys = sorted(present - {""})
+    if sel != "all" and sel not in keys:
+        keys = sorted(keys + [sel])          # keep the picked month selectable even if the other filters empty it
+    if "" in present:
+        keys.append("")                      # enquiries with no enquiry date, last
+
+    rows = []
+    total = {"in_file": 0, "matched": 0, "other": 0, "statuses": {s: 0 for s in statuses}}
+    for k in keys:
+        n_file = int((in_month == k).sum())
+        c = by_month.get(k, Counter())
+        n_match = int(sum(c.values()))
+        st = {s: int(c.get(s, 0)) for s in statuses}
+        rows.append({"month": k, "label": _month_label(k) if k else "No enquiry date",
+                     "in_file": n_file, "matched": n_match, "other": n_file - n_match, "statuses": st,
+                     **_stock_month_rates(st, n_match)})
+        total["in_file"] += n_file
+        total["matched"] += n_match
+        total["other"] += n_file - n_match
+        for s in statuses:
+            total["statuses"][s] += st[s]
+    total.update(_stock_month_rates(total["statuses"], total["matched"]))
+    total["label"] = "All months"
+
+    ex = in_file.loc[~in_file.index.isin(matched.index)]
+    block["month_excluded"] = [{"status": str(k), "count": int(v)} for k, v in ex["Enquiry Status"].value_counts().items()]
+    block["month_rows"] = rows
+    block["month_total"] = total
+    block["months"] = [{"value": r["month"], "label": r["label"], "matched": r["matched"], "in_file": r["in_file"]}
+                       for r in rows if r["month"]]
+    return block
 
 
 def compute_enquiry_stock(model: Optional[str] = None, consultant: Optional[str] = None,
-                          source: Optional[str] = None, status: Optional[str] = None) -> dict:
+                          source: Optional[str] = None, status: Optional[str] = None,
+                          sub_source: Optional[str] = None, month: Optional[str] = None) -> dict:
     info = store.stock_info or {}
     if store.stock.empty:
         result = se.empty_result(info)
@@ -1681,16 +1798,19 @@ def compute_enquiry_stock(model: Optional[str] = None, consultant: Optional[str]
         result["status_options"] = STOCK_MATCH_STATUSES
         return result
 
-    enq = _stock_enquiries(model, consultant, source, status)
+    enq = _stock_enquiries(model, consultant, source, status, sub_source, month)
     result = se.compute(enq, store.stock, info)
     result["message"] = ""
     result["status_options"] = STOCK_MATCH_STATUSES
+    result.update(_enquiry_month_block(model, consultant, source, status, sub_source, month, info,
+                                       rows=result.get("enquiries")))
     return result
 
 
 def export_enquiry_stock(model: Optional[str] = None, consultant: Optional[str] = None,
-                         source: Optional[str] = None, status: Optional[str] = None) -> bytes:
-    result = compute_enquiry_stock(model, consultant, source, status)
+                         source: Optional[str] = None, status: Optional[str] = None,
+                         sub_source: Optional[str] = None, month: Optional[str] = None) -> bytes:
+    result = compute_enquiry_stock(model, consultant, source, status, sub_source=sub_source, month=month)
     if not result["stock_loaded"]:
         raise ValueError(result.get("message") or "No stock file loaded.")
     return se.export_workbook(result, store.stock)
