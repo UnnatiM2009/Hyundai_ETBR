@@ -73,7 +73,6 @@ def api_filters():
     return dp.store.filter_options()
 
 
-@app.get("/api/kpi-comparison")
 @app.get("/api/comparison")
 def api_comparison(
     month: Optional[str] = Query(default=None),
@@ -443,6 +442,13 @@ class _NoCacheStatic(StaticFiles):
 
 
 app.mount("/assets", _NoCacheStatic(directory=STATIC_DIR), name="assets")
+
+
+@app.get("/logo.png")
+def brand_logo():
+    """Hyundai logo shown on the login page and the dashboard sidebar (file lives in data/Logo.png)."""
+    return FileResponse(os.path.join(BASE_DIR, "data", "Logo.png"), media_type="image/png",
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/")

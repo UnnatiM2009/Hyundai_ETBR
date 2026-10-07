@@ -12,5 +12,3 @@ Extract the complete folder, install requirements with `python -m pip install -r
 The original data_processor.py is restored exactly. Dashboard HTML, CSS and chart/report computations are unchanged from the previously supplied login package. The six-screen menu restrictions remain.
 
 Sessions expire after 8 hours and are held in memory; use one uvicorn worker. Restarting logs users out. Set COOKIE_SECURE=1 for HTTPS hosting. AUTH_DATA_FILE may specify another account workbook path. Old DASHBOARD_USER/DASHBOARD_PASSWORD variables are unused. Keep account workbooks private.
-
-Fix: the six permitted screens can load the comparison figures required for their KPI cards through /api/kpi-comparison. The dedicated Month Comparison screen/API remains Full-only. All existing calculations and visual formats are retained.

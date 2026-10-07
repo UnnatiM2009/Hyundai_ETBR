@@ -113,7 +113,7 @@ def install_auth(app, static_dir):
 class AccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
-        public = path in ('/login','/api/auth/login','/api/health')
+        public = path in ('/login','/api/auth/login','/api/health','/logo.png')
         if public: return await call_next(request)
         user = identity(request)
         if not user:
@@ -126,7 +126,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
             if origin and origin != str(request.base_url).rstrip('/'):
                 return JSONResponse({'detail':'Invalid origin'},status_code=403)
         if user['access']=='limited' and path.startswith('/api/'):
-            allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/kpi-comparison','/api/enquiry','/api/test-drive',
+            allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/enquiry','/api/test-drive',
                        '/api/booking','/api/sales','/api/exchange','/api/followup','/api/followup/list',
                        '/api/followup/booked','/api/breakdown'}
             if request.method != 'GET' or path not in allowed or (path=='/api/breakdown' and request.query_params.get('section') not in LIMITED_PAGES):
