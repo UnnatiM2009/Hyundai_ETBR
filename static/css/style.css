@@ -101,10 +101,11 @@ canvas { max-width: 100%; }
   margin-bottom: 18px;
 }
 .brand-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--amber), #B85A1E);
+  width: 66px;
+  aspect-ratio: 528 / 305;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #E5E5E5;
   color: #fff;
   font-family: var(--font-display);
   font-weight: 700;
@@ -114,6 +115,7 @@ canvas { max-width: 100%; }
   justify-content: center;
   flex-shrink: 0;
 }
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.3; }
 .brand-text strong { font-family: var(--font-display); font-size: 0.98rem; }
 .brand-text span { font-size: 0.75rem; color: var(--sidebar-muted); }
@@ -807,7 +809,7 @@ input[type="date"].filter-select { min-height: 38px; }
 @media (max-height: 820px) {
   .sidebar { padding: 14px 16px; }
   .brand { padding-bottom: 12px; margin-bottom: 8px; }
-  .brand-mark { width: 34px; height: 34px; }
+  .brand-mark { width: 58px; }
   .brand-text strong { font-size: 0.92rem; }
   .nav-link { padding: 7px 12px; font-size: 0.9rem; }
   .sidebar-footer { padding-top: 10px; gap: 8px; }

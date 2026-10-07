@@ -695,8 +695,7 @@ async function fetchComparisonFor(prefix, mtd = false) {
   const params = new URLSearchParams({ month: f.month, model: f.model, consultant: f.consultant, source: f.source,
                                       sub_source: f.sub_source || "all" });
   if (mtd) params.set("mtd", "true");
-  const endpoint = prefix === "cmp" ? "/api/comparison" : "/api/kpi-comparison";
-  return getJSON(`${endpoint}?${params.toString()}`);
+  return getJSON(`/api/comparison?${params.toString()}`);
 }
 
 async function refreshComparisonView() {
