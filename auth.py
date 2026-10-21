@@ -128,7 +128,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
         if user['access']=='limited' and path.startswith('/api/'):
             allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/enquiry','/api/test-drive',
                        '/api/booking','/api/sales','/api/exchange','/api/followup','/api/followup/list',
-                       '/api/followup/booked','/api/breakdown'}
+                       '/api/followup/booked','/api/breakdown','/api/comparison'}
             if request.method != 'GET' or path not in allowed or (path=='/api/breakdown' and request.query_params.get('section') not in LIMITED_PAGES):
                 return JSONResponse({'detail':'This screen is not available for Limited access.'}, status_code=403)
         response = await call_next(request)
