@@ -194,6 +194,10 @@
             <input type="date" id="dyDay" class="filter-select">
           </div>
           <div class="filter-field">
+            <label for="dyTeamLeader">Team Leader</label>
+            <select id="dyTeamLeader" class="filter-select"><option value="all">All team leaders</option></select>
+          </div>
+          <div class="filter-field">
             <label for="dyModel">Model</label>
             <select id="dyModel" class="filter-select"><option value="all">All models</option></select>
           </div>
@@ -211,7 +215,7 @@
           </div>
           <button id="dyReset" class="ghost-btn light-ghost">Reset filters</button>
         </div>
-        <p class="dy-note" id="dyNote">Pick a day for its enquiries, test drives, bookings and retails and the month to date. The Month, Model, Consultant, Source and Sub-source filters apply.</p>
+        <p class="dy-note" id="dyNote">Pick a day for its enquiries, test drives, bookings and retails and the month to date. The Month, Team Leader, Model, Consultant, Source and Sub-source filters apply.</p>
       </div>
 
       <div class="kpi-grid" id="dyKpiGrid"></div>
@@ -1332,6 +1336,6 @@
   </div>
 </div>
 
-<script src="/assets/js/app.js?v=16"></script>
+<script src="/assets/js/app.js?v=20"></script>
 </body>
 </html>

@@ -2772,12 +2772,62 @@ const DY_METRICS = [
   { key: "retail",    label: "Retails",         short: "Retails",     color: "--purple" },
   { key: "cancel",    label: "Booking cancels", short: "Cancels",     color: "--red" },
 ];
-const dailyState = { month: null, metric: "booking", scope: "day", seq: 0, data: null };
+const dailyState = { month: null, metric: "booking", scope: "day", seq: 0, data: null, teams: [], teamsKey: null };
 
 const dyWeekday = (iso) => new Intl.DateTimeFormat("en-GB", { weekday: "short" }).format(new Date(iso + "T00:00:00"));
 const dyDayText = (iso) => `${dyWeekday(iso)} ${fmtIsoLong(iso)}`;                 // "Wed 21 Oct 2026"
 const dyNum = (n) => `<span class="${n ? "" : "dy-zero"}">${fmtInt(n)}</span>`;     // zeros fade out so real numbers stand out
 const dyEl = (id) => document.getElementById(id);
+
+/* ---- Team Leader dropdown: pick one Team Leader to review just their team ---- */
+const dyTeamId = () => dyEl("dyTeamLeader")?.value || "all";
+const dyTeam = () => dailyState.teams.find(t => t.id === dyTeamId()) || null;
+/* "period=...&model=...&team_leader=ID" - the page's filters as a query string */
+function dyFilterQuery(f) {
+  const p = new URLSearchParams(apiParams(f));
+  if (dyTeamId() !== "all") p.set("team_leader", dyTeamId());
+  return p.toString();
+}
+
+/* Fill the Team Leader list (re-read whenever the filter options are re-read, e.g. after Refresh) and narrow the
+   Consultant list to the chosen team. Run right after populateFilterBar("dy"), which fills the full lists. */
+async function syncDailyTeams() {
+  if (dailyState.teamsKey !== state.filterOptions) {
+    try { dailyState.teams = (await getJSON("/api/daily/team-leaders")).leaders || []; }
+    catch (err) { dailyState.teams = []; }
+    dailyState.teamsKey = state.filterOptions;
+  }
+  const sel = dyEl("dyTeamLeader");
+  const previous = sel.value;
+  // Teams are optional: only when at least one Team Leader has consultants listed (Consultants column of Data.xlsx)
+  // is there anything to pick. Otherwise the dropdown stays hidden and the page covers the whole dealership.
+  const hasTeams = dailyState.teams.some(t => t.consultants.length);
+  sel.closest(".filter-field").style.display = hasTeams ? "" : "none";
+  sel.innerHTML = "";
+  sel.appendChild(new Option("All team leaders", "all"));
+  if (hasTeams) dailyState.teams.forEach(t => sel.appendChild(new Option(t.name, t.id)));
+  sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
+
+  const team = dyTeam();
+  if (!team) return;
+  const cs = dyEl("dyConsultant");
+  const keep = cs.value;
+  cs.innerHTML = "";
+  cs.appendChild(new Option(team.consultants.length ? "All consultants in team" : "No consultants in team", "all"));
+  team.consultants.forEach(c => cs.appendChild(new Option(c, c)));
+  cs.value = team.consultants.includes(keep) ? keep : "all";
+}
+
+/* One line under the filters saying whose data is shown. */
+function dyTeamNote() {
+  const t = dyTeam();
+  if (!t) return "";
+  if (!t.consultants.length) {
+    return ` No consultants are listed for ${t.name} in the Consultants column of Data.xlsx, so there is nothing to show for this team.`;
+  }
+  return ` Team: ${t.name} — ${t.consultants.length} consultant${t.consultants.length === 1 ? "" : "s"}.` +
+    (t.unmatched.length ? ` Not found in the enquiry data: ${t.unmatched.join(", ")}.` : "");
+}
 
 /* Multi-series line chart; clicking a point calls onPick(index). The selected day gets a bigger dot. */
 function dailyLineChart(canvasId, labels, datasets, titles, selectedIdx, onPick) {
@@ -2923,7 +2973,7 @@ function renderDailyCharts(d) {
 function dailyRecQuery(extra = {}) {
   const d = dailyState.data;
   const f = readFilterBar("dy");
-  const p = new URLSearchParams(apiParams(f));
+  const p = new URLSearchParams(dyFilterQuery(f));
   p.set("metric", dailyState.metric);
   p.set("scope", dailyState.scope);
   p.set("day", d.date);
@@ -2974,12 +3024,13 @@ async function loadDailyRecords() {
 /* ---- the page ---- */
 async function loadDaily() {
   await populateFilterBar("dy");
+  await syncDailyTeams();
   const f = readFilterBar("dy");
   const dayInput = dyEl("dyDay");
   if (dailyState.month !== f.month) dayInput.value = "";  // a different month: go to its latest active day
   dailyState.month = f.month;
 
-  let url = `/api/daily?${apiParams(f)}`;
+  let url = `/api/daily?${dyFilterQuery(f)}`;
   if (dayInput.value) url += `&day=${encodeURIComponent(dayInput.value)}`;
   let d;
   try {
@@ -2993,10 +3044,10 @@ async function loadDaily() {
   dayInput.min = d.min_date;
   dayInput.max = d.max_date;
   dayInput.value = d.date;
-  dyEl("dyNote").textContent = d.empty
+  dyEl("dyNote").textContent = (d.empty
     ? `No enquiries, bookings or retails in ${d.period_label} for these filters.`
     : `Showing ${dyDayText(d.date)} · month to date = 1 ${fmtIsoLong(d.min_date).slice(3)} to ${fmtIsoLong(d.date)}. ` +
-      `Figures follow the same rules as the Enquiry, Test Drive, Booking and Retails pages.`;
+      `Figures follow the same rules as the Enquiry, Test Drive, Booking and Retails pages.`) + dyTeamNote();
 
   renderKpiGrid("dyKpiGrid", DY_METRICS.map(m => ({
     label: m.label, value: fmtInt(d.kpis[m.key].day), color: `var(${m.color})`,
@@ -3014,7 +3065,7 @@ async function loadDaily() {
     warn.hidden = true;
   }
 
-  dyEl("dyScoreTitle").textContent = `Consultant scorecard — ${dyDayText(d.date)} and month to date`;
+  dyEl("dyScoreTitle").textContent = `Consultant scorecard — ${dyTeam() ? dyTeam().name + "'s team — " : ""}${dyDayText(d.date)} and month to date`;
   renderDailyScorecard(d);
   renderDailyGrids(d);
   renderDailyCharts(d);
@@ -3024,8 +3075,8 @@ async function loadDaily() {
 
 function initDailyReport() {
   attachFilterBar("dy", loadDaily, {
-    extraFields: ["Day"],
-    onReset: () => { dyEl("dyDay").value = ""; dailyState.scope = "day"; },
+    extraFields: ["Day", "TeamLeader"],
+    onReset: () => { dyEl("dyDay").value = ""; dyEl("dyTeamLeader").value = "all"; dailyState.scope = "day"; },
   });
   dyEl("dyRecTabs").addEventListener("click", (e) => {
     const btn = e.target.closest(".tab-btn");
@@ -3122,7 +3173,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V12`;
+  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V13`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
@@ -3205,9 +3256,11 @@ function showScopeNote(scope) {
   const names = scope.consultants || [];
   el.hidden = false;
   if (!names.length) {
+    // only reachable when consultants ARE listed for this login but none of them exist in the enquiry data
     el.classList.add("warn");
-    el.textContent = "No consultants are linked to your login yet, so there is no data to show. " +
-      "Ask the dashboard admin to add your team in the Consultants column of Data.xlsx.";
+    el.textContent = "None of the consultants listed for your login were found in the enquiry data, so there is no data to show. " +
+      "Ask the dashboard admin to check the spelling in the Consultants column of Data.xlsx" +
+      ((scope.unmatched || []).length ? ` (not found: ${scope.unmatched.join(", ")}).` : ".");
     return;
   }
   el.textContent = `Team view — showing only your team's data (${names.length} consultant${names.length === 1 ? "" : "s"})`;
