@@ -11,6 +11,7 @@ data_processor.py is not modified.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import pandas as pd
@@ -21,6 +22,30 @@ PIN_BLANK = "Not specified"
 PIN_COL = "Pin No."
 
 # metric key -> (store view kind, date column shown in the record list, extra row mask)
+AREA_FILE = os.path.join(dp.DATA_DIR, "Pin_Areas.xlsx")   # PIN | Area Name  (India Post names; edit freely)
+_area_cache = {"mtime": None, "map": {}}
+
+
+def _areas() -> dict:
+    """PIN -> area name(s), read from data/Pin_Areas.xlsx (reloaded when the file changes)."""
+    try:
+        mtime = os.path.getmtime(AREA_FILE)
+    except OSError:
+        return {}
+    if _area_cache["mtime"] != mtime:
+        try:
+            df = pd.read_excel(AREA_FILE, dtype=str)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            pc = next(c for c in df.columns if c.startswith("pin"))
+            ac = next(c for c in df.columns if c.startswith("area"))
+            m = {str(a).strip(): str(b).strip() for a, b in zip(df[pc], df[ac])
+                 if str(a).strip() and str(b).strip().lower() not in ("", "nan", "none")}
+        except Exception:
+            m = {}
+        _area_cache.update(mtime=mtime, map=m)
+    return _area_cache["map"]
+
+
 METRICS = {
     "enquiry": ("enquiry", "Enquiry Date", None),
     "testdrive": ("enquiry", "Enquiry Date", lambda d: d["Test Drive"] == "Y"),
@@ -86,16 +111,17 @@ def compute_pin_summary(period: Optional[str], model=None, consultant=None, sour
         for p, n in df["_pin"].value_counts().items():
             counts.setdefault(p, {k: 0 for k in METRICS})[m] = int(n)
     cities = _city_by_pin(frames.values())
+    areas = _areas()
 
     def sort_key(item):
         p, c = item
         return (p == PIN_BLANK, -c["enquiry"], -c["booking"], p)
 
     ordered = sorted(counts.items(), key=sort_key)
-    options = [{"pin": p, "city": cities.get(p, ""), "enquiry": c["enquiry"]} for p, c in ordered]
+    options = [{"pin": p, "city": cities.get(p, ""), "area": areas.get(p, ""), "enquiry": c["enquiry"]} for p, c in ordered]
 
     shown = [(p, c) for p, c in ordered if not pin or pin == "all" or p == pin]
-    rows = [{"pin": p, "city": cities.get(p, ""), **c} for p, c in shown]
+    rows = [{"pin": p, "area": areas.get(p, ""), "city": cities.get(p, ""), **c} for p, c in shown]
     totals = {m: sum(r[m] for r in rows) for m in METRICS}
     return {
         "rows": rows,
@@ -115,11 +141,12 @@ def compute_pin_records(metric: str, period: Optional[str], model=None, consulta
     if not df.empty and pin and pin != "all":
         df = df[df["_pin"] == pin]
     rows = []
+    areas = _areas()
     if not df.empty:
         df = df.sort_values(date_col, ascending=False, na_position="last")
         for _, r in df.iterrows():
             rows.append({
-                "pin": r["_pin"], "date": dp._fmt_date(r[date_col]),
+                "pin": r["_pin"], "area": areas.get(r["_pin"], ""), "date": dp._fmt_date(r[date_col]),
                 "customer": r["Name of the Customer"], "customer_id": r["Customer ID"],
                 "phone": r["Phone"], "city": r["City"], "model": r["Model"], "variant": r["Variant"],
                 "consultant": r["Consultant Name"], "source": r["Source"], "status": r["Enquiry Status"],
