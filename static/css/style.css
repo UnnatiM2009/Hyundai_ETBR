@@ -1004,3 +1004,10 @@ input[type="date"].filter-select { min-height: 38px; }
 #dyDays td:first-child { white-space: nowrap; }
 #dyDays tfoot td { font-weight: 700; border-top: 2px solid var(--border); background: var(--surface-2); }
 #view-daily > .panel { margin-bottom: 20px; }
+
+/* ---- PIN Code page ---- */
+#pinTable tfoot td { font-weight: 700; background: var(--surface-2); border-top: 2px solid var(--border); }
+#pinTable a.pin-link { color: var(--blue); font-weight: 600; text-decoration: none; border-bottom: 1px dashed currentColor; }
+#pinTable a.pin-link:hover { opacity: .75; }
+#view-pincode > .panel { margin-bottom: 20px; }
+#view-pincode #pinRecTable td { white-space: nowrap; }

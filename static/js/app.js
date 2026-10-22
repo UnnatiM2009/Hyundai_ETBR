@@ -3103,12 +3103,141 @@ function initDailyReport() {
   }, true);
 }
 
+/* ---------------------------------------------------------------------- */
+/* PIN Code page — Enquiry / Test Drive / Booking / Retails / Cancel       */
+/* Booking counted PIN code wise (Pin No. column of the Enquiry sheet)     */
+/* ---------------------------------------------------------------------- */
+const pinState = { data: null, rec: null, seq: 0 };
+const PIN_METRICS = ["enquiry", "testdrive", "booking", "retail", "cancel"];
+
+function pinQuery(f, extra = {}) {
+  const p = { period: f.month, model: f.model, consultant: f.consultant, source: f.source,
+              sub_source: f.sub_source || "all", pin: document.getElementById("pinPin")?.value || "all", ...extra };
+  return new URLSearchParams(p).toString();
+}
+
+function pinFillSelect(data) {
+  const sel = document.getElementById("pinPin");
+  if (!sel) return;
+  const previous = sel.value;
+  sel.innerHTML = "";
+  sel.appendChild(new Option("All PIN codes", "all"));
+  (data.options || []).forEach(o => {
+    const city = o.city ? ` · ${o.city}` : "";
+    sel.appendChild(new Option(`${o.pin}${city} (${fmtInt(o.enquiry)})`, o.pin));
+  });
+  sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
+}
+
+async function loadPinCode() {
+  await populateFilterBar("pin");
+  const f = readFilterBar("pin");
+  // First call keeps the PIN dropdown's current pick; if that PIN has vanished for these filters, retry with All.
+  let data = await getJSON(`/api/pincode?${pinQuery(f)}`);
+  const sel = document.getElementById("pinPin");
+  if (sel && sel.value !== "all" && !(data.options || []).some(o => o.pin === sel.value)) {
+    sel.value = "all";
+    data = await getJSON(`/api/pincode?${pinQuery(f)}`);
+  }
+  pinFillSelect(data);
+  pinState.data = data;
+
+  const t = data.totals;
+  renderKpiGrid("pinKpiGrid", [
+    { label: "PIN codes", value: fmtInt(data.pin_count), color: "var(--blue)", sub: "distinct PIN codes in this selection" },
+    { label: "Enquiries", value: fmtInt(t.enquiry), color: "var(--blue)", sub: `${fmtInt(t.testdrive)} test drives` },
+    { label: "Bookings", value: fmtInt(t.booking), color: "var(--green)", sub: "by booking date" },
+    { label: "Retails", value: fmtInt(t.retail), color: "var(--purple)", sub: "by retail date" },
+    { label: "Cancel booking", value: fmtInt(t.cancel), color: "var(--red)", sub: "Enquiry Status = Booking Cancel" },
+  ]);
+
+  const body = document.getElementById("pinBody");
+  const foot = document.getElementById("pinFoot");
+  if (!data.rows.length) {
+    body.innerHTML = `<tr><td colspan="7" class="empty-cell">No data for this selection.</td></tr>`;
+    foot.innerHTML = "";
+  } else {
+    const cell = (pin, metric, n) => n
+      ? `<td data-sort="${n}"><a href="#" class="pin-link" data-pin="${esc(pin)}" data-metric="${metric}">${fmtInt(n)}</a></td>`
+      : `<td data-sort="0">0</td>`;
+    body.innerHTML = data.rows.map(r => `<tr>
+      <td><strong>${esc(r.pin)}</strong></td><td>${dash(r.city)}</td>
+      ${PIN_METRICS.map(m => cell(r.pin, m, r[m])).join("")}
+    </tr>`).join("");
+    foot.innerHTML = `<tr class="total-row"><td><strong>Total</strong></td><td></td>
+      ${PIN_METRICS.map(m => `<td><strong>${fmtInt(t[m])}</strong></td>`).join("")}</tr>`;
+  }
+  await loadPinRecords();
+}
+
+async function loadPinRecords() {
+  const f = readFilterBar("pin");
+  const metric = document.getElementById("pinShow").value;
+  const seq = ++pinState.seq;
+  const d = await getJSON(`/api/pincode/records?${pinQuery(f, { metric })}`);
+  if (seq !== pinState.seq) return;            // a newer request replaced this one
+  pinState.rec = d;
+  const pinPick = document.getElementById("pinPin").value;
+  document.getElementById("pinRecDate").textContent = d.date_label;
+  document.getElementById("pinRecSub").textContent =
+    `${d.label} — ${pinPick === "all" ? "all PIN codes" : "PIN " + pinPick} · ${fmtInt(d.rows.length)} record${d.rows.length === 1 ? "" : "s"}`;
+  const body = document.getElementById("pinRecBody");
+  if (!d.rows.length) {
+    body.innerHTML = `<tr><td colspan="10" class="empty-cell">No ${esc(d.label)} records for this selection.</td></tr>`;
+    return;
+  }
+  body.innerHTML = d.rows.map(r => `<tr>
+    <td>${esc(r.pin)}</td><td>${dash(r.date)}</td><td>${dash(r.customer)}</td><td>${dash(r.phone)}</td>
+    <td>${dash(r.city)}</td><td>${dash(r.model)}</td><td>${dash(r.variant)}</td>
+    <td>${dash(r.consultant)}</td><td>${dash(r.source)}</td><td>${dash(r.status)}</td></tr>`).join("");
+}
+
+function exportPinCode() {
+  const d = pinState.data;
+  if (!d) return;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [["PIN Code", "City", "Enquiry", "Test Drive", "Booking", "Retails", "Cancel Booking"].join(",")];
+  d.rows.forEach(r => lines.push([q(r.pin), q(r.city), r.enquiry, r.testdrive, r.booking, r.retail, r.cancel].join(",")));
+  lines.push([q("Total"), q(""), d.totals.enquiry, d.totals.testdrive, d.totals.booking, d.totals.retail, d.totals.cancel].join(","));
+  const rec = pinState.rec;
+  if (rec && rec.rows.length) {
+    lines.push("", q(`${rec.label} records`));
+    lines.push(["PIN Code", rec.date_label, "Customer", "Contact", "City", "Model", "Variant", "Consultant", "Source", "Status"].map(q).join(","));
+    rec.rows.forEach(r => lines.push([r.pin, r.date, r.customer, r.phone, r.city, r.model, r.variant, r.consultant, r.source, r.status].map(q).join(",")));
+  }
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `pin_code_report_${readFilterBar("pin").month}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function initPinCode() {
+  attachFilterBar("pin", loadPinCode, {
+    extraFields: ["Pin"],
+    onReset: () => { const p = document.getElementById("pinPin"); if (p) p.value = "all"; },
+  });
+  document.getElementById("pinShow").addEventListener("change", loadPinRecords);
+  document.getElementById("pinExport").addEventListener("click", exportPinCode);
+  document.getElementById("pinBody").addEventListener("click", (e) => {
+    const a = e.target.closest("a.pin-link");
+    if (!a) return;
+    e.preventDefault();
+    document.getElementById("pinShow").value = a.dataset.metric;
+    document.getElementById("pinPin").value = a.dataset.pin;
+    loadPinCode();
+    document.getElementById("pinRecTable").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 const SECTION_LOADERS = {
   overview: loadOverview,
   daily: loadDaily,
   testdrive: loadTestDrive,
   enquiry: loadEnquiry,
   exchange: loadExchange,
+  pincode: loadPinCode,
   followup: loadFollowup,
   booking: loadBooking,
   sales: loadSales,
@@ -3123,6 +3252,7 @@ const SECTION_TITLES = {
   testdrive: ["Test drive analytics", "Enquiry sheet column O — Y (done) vs N (not done)"],
   enquiry: ["Enquiry analytics", "Status, appointed enquiries, sources, ageing and lost reasons"],
   exchange: ["Exchange analytics", "Exchange opted, scrap, present car, maker, model and model year from the Enquiry sheet"],
+  pincode: ["PIN code analytics", "Enquiry, test drive, booking, retails and booking cancel — PIN code wise (Pin No. column of the Enquiry sheet)"],
   followup: ["Enquiry follow-up", "Day-wise and previous-days pending follow-ups, date-wise schedule, follow-up and appointed cancels"],
   booking: ["Booking analytics", "Enquiry Status = Booked — sources, consultants, trend and booking cancels"],
   sales: ["Retail analytics", "Enquiry Status = Retail — vehicles sold, by model, consultant and source"],
@@ -3324,6 +3454,7 @@ async function boot() {
     onReset: () => { const a = document.getElementById("enqAge"); if (a) a.value = "all"; },
   });
   attachFilterBar("ex", loadExchange);
+  initPinCode();
   document.getElementById("exScopeTabs").addEventListener("click", (e) => {
     const btn = e.target.closest(".tab-btn");
     if (!btn) return;

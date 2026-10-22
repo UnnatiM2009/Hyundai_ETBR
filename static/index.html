@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <script src="/assets/js/vendor/chart.umd.js"></script>
-<link rel="stylesheet" href="/assets/css/style.css?v=12">
+<link rel="stylesheet" href="/assets/css/style.css?v=13">
 </head>
 <body>
 
@@ -38,6 +38,7 @@
       <button class="nav-link" data-section="booking">Booking</button>
       <button class="nav-link" data-section="sales">Retails</button>
       <button class="nav-link" data-section="exchange">Exchange</button>
+      <button class="nav-link" data-section="pincode">PIN Code</button>
       <button class="nav-link" data-section="inventory">Vehicle Stock</button>
       <button class="nav-link" data-section="stock">Enquiry Wise Stock</button>
       <button class="nav-link" data-section="comparison">Month Comparison</button>
@@ -543,6 +544,84 @@
         </div>
       </div>
 </section>
+
+    <!-- ---------- PIN CODE ---------- -->
+    <section class="view" id="view-pincode">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="pinMonth">Month</label>
+            <select id="pinMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="pinPin">PIN Code</label>
+            <select id="pinPin" class="filter-select"><option value="all">All PIN codes</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="pinModel">Model</label>
+            <select id="pinModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="pinConsultant">Consultant</label>
+            <select id="pinConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="pinSource">Source</label>
+            <select id="pinSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="pinSubSource">Sub-source</label>
+            <select id="pinSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
+          <button id="pinReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
+      <div class="kpi-grid" id="pinKpiGrid"></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>PIN code wise summary</h3>
+          <p>Pin No. from the Enquiry sheet &mdash; click a number to list those customers below; click a heading to sort</p>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="pinTable">
+            <thead>
+              <tr><th>PIN Code</th><th>City</th><th>Enquiry</th><th>Test Drive</th><th>Booking</th><th>Retails</th><th>Cancel Booking</th></tr>
+            </thead>
+            <tbody id="pinBody"></tbody>
+            <tfoot id="pinFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Customer records</h3>
+          <p id="pinRecSub">Pick a record type and PIN code</p>
+        </div>
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="pinShow">Show</label>
+            <select id="pinShow" class="filter-select">
+              <option value="enquiry">Enquiry</option>
+              <option value="testdrive">Test Drive</option>
+              <option value="booking">Booking</option>
+              <option value="retail">Retails</option>
+              <option value="cancel">Cancel Booking</option>
+            </select>
+          </div>
+          <button id="pinExport" class="ghost-btn light-ghost">Export CSV</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table text-table" id="pinRecTable">
+            <thead>
+              <tr><th>PIN Code</th><th id="pinRecDate">Date</th><th>Customer</th><th>Contact</th><th>City</th><th>Model</th><th>Variant</th><th>Consultant</th><th>Source</th><th>Status</th></tr>
+            </thead>
+            <tbody id="pinRecBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
     <!-- ---------- SALES ---------- -->
     <section class="view" id="view-sales">
