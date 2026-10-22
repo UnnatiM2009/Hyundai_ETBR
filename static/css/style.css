@@ -1011,3 +1011,5 @@ input[type="date"].filter-select { min-height: 38px; }
 #pinTable a.pin-link:hover { opacity: .75; }
 #view-pincode > .panel { margin-bottom: 20px; }
 #view-pincode #pinRecTable td { white-space: nowrap; }
+#pinTable td.pin-area { min-width: 220px; max-width: 420px; white-space: normal; text-align: left; }
+#pinTable th:nth-child(2) { text-align: left; }

@@ -3123,8 +3123,8 @@ function pinFillSelect(data) {
   sel.innerHTML = "";
   sel.appendChild(new Option("All PIN codes", "all"));
   (data.options || []).forEach(o => {
-    const city = o.city ? ` · ${o.city}` : "";
-    sel.appendChild(new Option(`${o.pin}${city} (${fmtInt(o.enquiry)})`, o.pin));
+    const area = o.area ? ` · ${o.area.length > 40 ? o.area.slice(0, 40) + "…" : o.area}` : (o.city ? ` · ${o.city}` : "");
+    sel.appendChild(new Option(`${o.pin}${area} (${fmtInt(o.enquiry)})`, o.pin));
   });
   sel.value = Array.from(sel.options).some(o => o.value === previous) ? previous : "all";
 }
@@ -3154,17 +3154,17 @@ async function loadPinCode() {
   const body = document.getElementById("pinBody");
   const foot = document.getElementById("pinFoot");
   if (!data.rows.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty-cell">No data for this selection.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty-cell">No data for this selection.</td></tr>`;
     foot.innerHTML = "";
   } else {
     const cell = (pin, metric, n) => n
       ? `<td data-sort="${n}"><a href="#" class="pin-link" data-pin="${esc(pin)}" data-metric="${metric}">${fmtInt(n)}</a></td>`
       : `<td data-sort="0">0</td>`;
     body.innerHTML = data.rows.map(r => `<tr>
-      <td><strong>${esc(r.pin)}</strong></td><td>${dash(r.city)}</td>
+      <td><strong>${esc(r.pin)}</strong></td><td class="pin-area">${dash(r.area)}</td><td>${dash(r.city)}</td>
       ${PIN_METRICS.map(m => cell(r.pin, m, r[m])).join("")}
     </tr>`).join("");
-    foot.innerHTML = `<tr class="total-row"><td><strong>Total</strong></td><td></td>
+    foot.innerHTML = `<tr class="total-row"><td><strong>Total</strong></td><td></td><td></td>
       ${PIN_METRICS.map(m => `<td><strong>${fmtInt(t[m])}</strong></td>`).join("")}</tr>`;
   }
   await loadPinRecords();
@@ -3183,11 +3183,11 @@ async function loadPinRecords() {
     `${d.label} — ${pinPick === "all" ? "all PIN codes" : "PIN " + pinPick} · ${fmtInt(d.rows.length)} record${d.rows.length === 1 ? "" : "s"}`;
   const body = document.getElementById("pinRecBody");
   if (!d.rows.length) {
-    body.innerHTML = `<tr><td colspan="10" class="empty-cell">No ${esc(d.label)} records for this selection.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11" class="empty-cell">No ${esc(d.label)} records for this selection.</td></tr>`;
     return;
   }
   body.innerHTML = d.rows.map(r => `<tr>
-    <td>${esc(r.pin)}</td><td>${dash(r.date)}</td><td>${dash(r.customer)}</td><td>${dash(r.phone)}</td>
+    <td>${esc(r.pin)}</td><td>${dash(r.area)}</td><td>${dash(r.date)}</td><td>${dash(r.customer)}</td><td>${dash(r.phone)}</td>
     <td>${dash(r.city)}</td><td>${dash(r.model)}</td><td>${dash(r.variant)}</td>
     <td>${dash(r.consultant)}</td><td>${dash(r.source)}</td><td>${dash(r.status)}</td></tr>`).join("");
 }
@@ -3196,14 +3196,14 @@ function exportPinCode() {
   const d = pinState.data;
   if (!d) return;
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const lines = [["PIN Code", "City", "Enquiry", "Test Drive", "Booking", "Retails", "Cancel Booking"].join(",")];
-  d.rows.forEach(r => lines.push([q(r.pin), q(r.city), r.enquiry, r.testdrive, r.booking, r.retail, r.cancel].join(",")));
-  lines.push([q("Total"), q(""), d.totals.enquiry, d.totals.testdrive, d.totals.booking, d.totals.retail, d.totals.cancel].join(","));
+  const lines = [["PIN Code", "Area Name", "City", "Enquiry", "Test Drive", "Booking", "Retails", "Cancel Booking"].join(",")];
+  d.rows.forEach(r => lines.push([q(r.pin), q(r.area), q(r.city), r.enquiry, r.testdrive, r.booking, r.retail, r.cancel].join(",")));
+  lines.push([q("Total"), q(""), q(""), d.totals.enquiry, d.totals.testdrive, d.totals.booking, d.totals.retail, d.totals.cancel].join(","));
   const rec = pinState.rec;
   if (rec && rec.rows.length) {
     lines.push("", q(`${rec.label} records`));
-    lines.push(["PIN Code", rec.date_label, "Customer", "Contact", "City", "Model", "Variant", "Consultant", "Source", "Status"].map(q).join(","));
-    rec.rows.forEach(r => lines.push([r.pin, r.date, r.customer, r.phone, r.city, r.model, r.variant, r.consultant, r.source, r.status].map(q).join(",")));
+    lines.push(["PIN Code", "Area Name", rec.date_label, "Customer", "Contact", "City", "Model", "Variant", "Consultant", "Source", "Status"].map(q).join(","));
+    rec.rows.forEach(r => lines.push([r.pin, r.area, r.date, r.customer, r.phone, r.city, r.model, r.variant, r.consultant, r.source, r.status].map(q).join(",")));
   }
   const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
