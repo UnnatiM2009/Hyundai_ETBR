@@ -42,7 +42,8 @@ app.add_middleware(
 )
 
 
-from auth import install_auth
+from auth import install_auth, team_leaders
+import team_scope
 
 def _period_param(period: Optional[str]) -> Optional[str]:
     return dp.store.resolve_period(period)
@@ -225,6 +226,38 @@ def _check_day(day: Optional[str]) -> Optional[str]:
     return day or None
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _team_view(team_leader: Optional[str]):
+    """Limit everything inside the block to one Team Leader's team (their Consultants column + their own name).
+    No Team Leader chosen (or 'all') = the whole dealership. The limit is applied here on the server."""
+    scope = None
+    if team_leader and team_leader != "all":
+        match = next((t for t in team_leaders() if t["id"] == team_leader), None)
+        if match is None:
+            raise HTTPException(400, "Unknown Team Leader")
+        scope = team_scope.scope_for(match["user"], review=True)
+    token = team_scope.SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        team_scope.SCOPE.reset(token)
+
+
+@app.get("/api/daily/team-leaders")
+def api_daily_team_leaders():
+    """The Team Leaders for the Daily Report dropdown, each with the consultants found in the enquiry data."""
+    full = team_scope.full_enquiry(dp.store)
+    out = []
+    for t in team_leaders():
+        info = team_scope.describe(t["user"], full, review=True)
+        out.append({"id": t["id"], "name": t["name"], "consultants": info.get("consultants", []),
+                    "unmatched": info.get("unmatched", [])})
+    return {"leaders": out}
+
+
 @app.get("/api/daily")
 def api_daily(
     period: Optional[str] = Query(default="current_month"),
@@ -233,10 +266,12 @@ def api_daily(
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
     sub_source: Optional[str] = Query(default=None),
+    team_leader: Optional[str] = Query(default=None, description="a Team Leader's user id, or 'all'"),
 ):
     """The chosen day and the month to date: KPIs, consultant scorecard, Consultant x Model tables, day-by-day history."""
-    return daily_report.compute_daily(_period_param(period), _check_day(day), model=model, consultant=consultant,
-                                      source=source, sub_source=sub_source)
+    with _team_view(team_leader):
+        return daily_report.compute_daily(_period_param(period), _check_day(day), model=model, consultant=consultant,
+                                          source=source, sub_source=sub_source)
 
 
 def _daily_record_args(metric: str, scope: str):
@@ -257,11 +292,13 @@ def api_daily_records(
     source: Optional[str] = Query(default=None),
     sub_source: Optional[str] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=2000),
+    team_leader: Optional[str] = Query(default=None),
 ):
     """The customer rows behind a Daily report number."""
     _daily_record_args(metric, scope)
-    return daily_report.daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
-                                      consultant=consultant, source=source, sub_source=sub_source, limit=limit)
+    with _team_view(team_leader):
+        return daily_report.daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
+                                          consultant=consultant, source=source, sub_source=sub_source, limit=limit)
 
 
 @app.get("/api/daily/export")
@@ -274,11 +311,13 @@ def api_daily_export(
     consultant: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
     sub_source: Optional[str] = Query(default=None),
+    team_leader: Optional[str] = Query(default=None),
 ):
     """CSV of every record behind a Daily report number."""
     _daily_record_args(metric, scope)
-    out = daily_report.export_daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
-                                            consultant=consultant, source=source, sub_source=sub_source)
+    with _team_view(team_leader):
+        out = daily_report.export_daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
+                                                consultant=consultant, source=source, sub_source=sub_source)
     return Response(out["content"].encode("utf-8-sig"), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{out["filename"]}"'})
 

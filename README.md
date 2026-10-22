@@ -487,7 +487,10 @@ so every number ties to the existing pages. Listed in `FULL_PAGES` only in `auth
 **Team Leader data scoping** - new `team_scope.py`. A Limited user whose Designation contains "Team Leader" only sees the consultants
 listed for them in the **Consultants** column of data/Data.xlsx (plus their own name). Enforced per request on the server by giving
 `data_processor.store` a scope-aware `enquiry` view, so every existing calculation is limited automatically and `data_processor.py`
-is unchanged. A Team Leader with no consultants listed sees no data. See LOGIN_SETUP.md.
+is unchanged. A Team Leader with the Consultants cell blank is not restricted (sees everything, as before). See LOGIN_SETUP.md.
+
+**Daily Report - Team Leader dropdown (hidden until at least one Team Leader has consultants listed; Limited users otherwise see all data on their six pages):** pick one Team Leader to review their team (`team_leader=<user id>` on `/api/daily`, `/api/daily/records`,
+`/api/daily/export`; list from `/api/daily/team-leaders`). Strict by design: a Team Leader with nobody listed shows an empty team.
 
 **Also included:** `/api/comparison` added to the Limited allow-list (fixes blank Enquiry / Test Drive / Booking / Retails pages for Limited users).
 

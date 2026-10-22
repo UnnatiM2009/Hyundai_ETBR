@@ -58,6 +58,14 @@ def identity(request):
     if not user or user['revision'] != session['revision']: return None
     return user
 
+def team_leaders():
+    """Every active Team Leader in the account workbook: [{'id', 'name', 'user'}], sorted by name.
+    Feeds the Daily Report's Team Leader dropdown (Full users only)."""
+    try: users = accounts()
+    except (ValueError, OSError, StopIteration): return []
+    found = [{'id':uid, 'name':u.get('name') or uid, 'user':u} for uid, u in users.items() if team_scope.is_team_leader(u)]
+    return sorted(found, key=lambda t: t['name'].lower())
+
 def public_user(user):
     import data_processor as dp
     return {'user_id':user['user id'], 'name':user.get('name') or user['user id'], 'access':user['access'],

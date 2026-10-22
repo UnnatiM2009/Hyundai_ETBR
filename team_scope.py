@@ -16,8 +16,10 @@ How it works
   set. Every existing calculation (KPIs, breakdowns, follow-ups, comparison, filters, meta, the
   new Daily report ...) reads `store.enquiry`, so they are all limited automatically and none of
   their logic had to change. data_processor.py itself is NOT modified.
-* An empty scope (a Team Leader with no consultants linked) returns an empty table - the safe
-  default is "see nothing", never "see everything".
+* A Team Leader is only restricted once consultants are listed for them (see below). With the
+  Consultants cell left blank they are NOT restricted and see everything, as before this feature.
+  (Names are listed but none of them exist in the enquiry data -> the scope is non-empty and they
+  see nothing: a typo never silently widens access.)
 
 Which consultants belong to a Team Leader
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -57,18 +59,29 @@ def is_team_leader(user: dict) -> bool:
     return "team leader" in norm(user.get("designation", ""))
 
 
-def scope_for(user: dict):
-    """The set of consultants this user may see, or None when they may see everyone."""
-    if user.get("access") != "limited" or not is_team_leader(user):
+def scope_for(user: dict, review: bool = False):
+    """The set of consultants this user may see, or None when they may see everyone.
+
+    A signed-in Team Leader (Limited access) is only restricted once consultants are listed for them in
+    the Consultants column of data/Data.xlsx. With the column left blank they see every consultant, exactly
+    as before the team feature existed.
+
+    review=True is for the Daily Report's Team Leader dropdown, where a Full user picks one Team Leader to
+    review: it always means "that team" (the listed consultants plus the Team Leader's own name), whatever
+    the Team Leader's own access level, and a Team Leader with nobody listed has just their own name."""
+    if not is_team_leader(user):
         return None
-    names = set(split_names(user.get("consultants", "")))
+    listed = split_names(user.get("consultants", ""))
+    if not review and (user.get("access") != "limited" or not listed):
+        return None
+    names = set(listed)
     names.add(user.get("name") or "")
     return frozenset(n for n in (norm(x) for x in names) if n)
 
 
-def describe(user: dict, full_frame=None) -> dict:
-    """What the page shows a Team Leader about their own scope (names only - nothing sensitive)."""
-    scope = scope_for(user)
+def describe(user: dict, full_frame=None, review: bool = False) -> dict:
+    """What the page shows about a Team Leader's scope (names only - nothing sensitive)."""
+    scope = scope_for(user, review)
     if scope is None:
         return {"restricted": False}
     listed = split_names(user.get("consultants", ""))
