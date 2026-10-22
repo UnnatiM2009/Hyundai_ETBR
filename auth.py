@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import team_scope
 
-LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange']
+LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange', 'pincode']
 # 'daily' (Daily report) is deliberately NOT in LIMITED_PAGES: Full-access designations only.
 FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'inventory', 'stock', 'comparison']
 DATA_FILE = Path(os.environ.get('AUTH_DATA_FILE', str(Path(__file__).parent / 'data' / 'Data.xlsx')))
@@ -145,7 +145,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({'detail':'Invalid origin'},status_code=403)
         if user['access']=='limited' and path.startswith('/api/'):
             allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/enquiry','/api/test-drive',
-                       '/api/booking','/api/sales','/api/exchange','/api/followup','/api/followup/list',
+                       '/api/booking','/api/sales','/api/exchange','/api/pincode','/api/pincode/records','/api/followup','/api/followup/list',
                        '/api/followup/booked','/api/breakdown','/api/comparison'}
             if request.method != 'GET' or path not in allowed or (path=='/api/breakdown' and request.query_params.get('section') not in LIMITED_PAGES):
                 return JSONResponse({'detail':'This screen is not available for Limited access.'}, status_code=403)

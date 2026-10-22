@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import data_processor as dp
 import daily_report
+import pin_report
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -198,6 +199,35 @@ def api_booking(
 ):
     return dp.compute_booking_analytics(_period_param(period), model=model, consultant=consultant, source=source,
                                        sub_source=sub_source)
+
+
+@app.get("/api/pincode")
+def api_pincode(
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+    pin: Optional[str] = Query(default=None),
+):
+    return pin_report.compute_pin_summary(_period_param(period), model=model, consultant=consultant,
+                                          source=source, sub_source=sub_source, pin=pin)
+
+
+@app.get("/api/pincode/records")
+def api_pincode_records(
+    metric: str = Query(default="enquiry"),
+    period: Optional[str] = Query(default="current_month"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+    pin: Optional[str] = Query(default=None),
+):
+    if metric not in pin_report.METRICS:
+        raise HTTPException(400, f"Unknown metric '{metric}'")
+    return pin_report.compute_pin_records(metric, _period_param(period), model=model, consultant=consultant,
+                                          source=source, sub_source=sub_source, pin=pin)
 
 
 @app.get("/api/sales")
