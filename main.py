@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import data_processor as dp
+import daily_report
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -208,6 +209,78 @@ def api_sales(
 ):
     return dp.compute_sales_analytics(_period_param(period), model=model, consultant=consultant, source=source,
                                      sub_source=sub_source)
+
+
+# --------------------------------------------------------------------------- #
+# Daily report (Full-access users only - these paths are not in the Limited allow-list in auth.py)
+# --------------------------------------------------------------------------- #
+import re as _re
+
+_DAY_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _check_day(day: Optional[str]) -> Optional[str]:
+    if day and not _DAY_RE.match(day):
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    return day or None
+
+
+@app.get("/api/daily")
+def api_daily(
+    period: Optional[str] = Query(default="current_month"),
+    day: Optional[str] = Query(default=None, description="YYYY-MM-DD inside the month; defaults to the latest active day"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+):
+    """The chosen day and the month to date: KPIs, consultant scorecard, Consultant x Model tables, day-by-day history."""
+    return daily_report.compute_daily(_period_param(period), _check_day(day), model=model, consultant=consultant,
+                                      source=source, sub_source=sub_source)
+
+
+def _daily_record_args(metric: str, scope: str):
+    if metric not in daily_report.RECORD_DATE_COL:
+        raise HTTPException(400, f"Unknown metric '{metric}'")
+    if scope not in daily_report.RECORD_SCOPES:
+        raise HTTPException(400, f"Unknown scope '{scope}'")
+
+
+@app.get("/api/daily/records")
+def api_daily_records(
+    metric: str = Query(default="booking"),
+    scope: str = Query(default="day", description="day | mtd"),
+    period: Optional[str] = Query(default="current_month"),
+    day: Optional[str] = Query(default=None),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    """The customer rows behind a Daily report number."""
+    _daily_record_args(metric, scope)
+    return daily_report.daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
+                                      consultant=consultant, source=source, sub_source=sub_source, limit=limit)
+
+
+@app.get("/api/daily/export")
+def api_daily_export(
+    metric: str = Query(default="booking"),
+    scope: str = Query(default="day"),
+    period: Optional[str] = Query(default="current_month"),
+    day: Optional[str] = Query(default=None),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+):
+    """CSV of every record behind a Daily report number."""
+    _daily_record_args(metric, scope)
+    out = daily_report.export_daily_records(metric, _period_param(period), _check_day(day), scope, model=model,
+                                            consultant=consultant, source=source, sub_source=sub_source)
+    return Response(out["content"].encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{out["filename"]}"'})
 
 
 @app.get("/api/followup")

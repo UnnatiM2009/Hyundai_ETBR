@@ -7,9 +7,11 @@ from openpyxl import load_workbook
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import team_scope
 
 LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange']
-FULL_PAGES = ['overview', *LIMITED_PAGES, 'inventory', 'stock', 'comparison']
+# 'daily' (Daily report) is deliberately NOT in LIMITED_PAGES: Full-access designations only.
+FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'inventory', 'stock', 'comparison']
 DATA_FILE = Path(os.environ.get('AUTH_DATA_FILE', str(Path(__file__).parent / 'data' / 'Data.xlsx')))
 SESSIONS = {}
 FAILURES = defaultdict(list)
@@ -25,7 +27,8 @@ def accounts():
         ws = wb['Users'] if 'Users' in wb.sheetnames else wb.active
         rows = iter(ws.values)
         headers = [str(v or '').strip().lower().replace('_', ' ') for v in next(rows)]
-        aliases = {'userid':'user id', 'username':'user id', 'employee id':'user id', 'access level':'access', 'full/limited':'access'}
+        aliases = {'userid':'user id', 'username':'user id', 'employee id':'user id', 'access level':'access', 'full/limited':'access',
+                   'team':'consultants', 'team members':'consultants', 'team consultants':'consultants', 'consultant names':'consultants'}
         headers = [aliases.get(h, h) for h in headers]
         if not {'user id','password','access'}.issubset(headers):
             raise ValueError('Users sheet needs User ID, Password and Access columns.')
@@ -56,10 +59,17 @@ def identity(request):
     return user
 
 def public_user(user):
+    import data_processor as dp
     return {'user_id':user['user id'], 'name':user.get('name') or user['user id'], 'access':user['access'],
-            'pages':FULL_PAGES if user['access']=='full' else LIMITED_PAGES}
+            'designation':user.get('designation',''),
+            'pages':FULL_PAGES if user['access']=='full' else LIMITED_PAGES,
+            # Team Leaders only: which consultants' data they are limited to
+            'scope':team_scope.describe(user, team_scope.full_enquiry(dp.store))}
 
 def install_auth(app, static_dir):
+    import data_processor as dp
+    team_scope.install(dp.DashboardData)      # Team Leader data scoping (no change to data_processor.py)
+
     @app.get('/login')
     def login_page():
         return FileResponse(Path(static_dir)/'login.html', headers={'Cache-Control':'no-store'})
@@ -131,6 +141,11 @@ class AccessMiddleware(BaseHTTPMiddleware):
                        '/api/followup/booked','/api/breakdown','/api/comparison'}
             if request.method != 'GET' or path not in allowed or (path=='/api/breakdown' and request.query_params.get('section') not in LIMITED_PAGES):
                 return JSONResponse({'detail':'This screen is not available for Limited access.'}, status_code=403)
-        response = await call_next(request)
+        # Team Leaders: every calculation for this request only sees their own team's enquiries.
+        token = team_scope.SCOPE.set(team_scope.scope_for(user))
+        try:
+            response = await call_next(request)
+        finally:
+            team_scope.SCOPE.reset(token)
         response.headers['Cache-Control'] = 'no-store'
         return response

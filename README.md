@@ -477,3 +477,17 @@ with whatever the window was already scoped to:
   `selected_month`, `months`, `month_rows`, `month_total`, `month_excluded` (everything it returned before is
   untouched). The per-month counts are remembered per filter set (`_MONTH_MATCH_CACHE`) so clicking between
   months is instant after the page has opened.
+
+## V17 changes
+
+**Daily Report page (Full access only)** - new `daily_report.py`, routes `GET /api/daily`, `/api/daily/records`, `/api/daily/export`.
+Adapted from the Skoda ETBR dashboard's Daily report, grouped by Consultant x Model (Hyundai has one showroom). Uses `store.view()`
+so every number ties to the existing pages. Listed in `FULL_PAGES` only in `auth.py`; not in the Limited allow-list.
+
+**Team Leader data scoping** - new `team_scope.py`. A Limited user whose Designation contains "Team Leader" only sees the consultants
+listed for them in the **Consultants** column of data/Data.xlsx (plus their own name). Enforced per request on the server by giving
+`data_processor.store` a scope-aware `enquiry` view, so every existing calculation is limited automatically and `data_processor.py`
+is unchanged. A Team Leader with no consultants listed sees no data. See LOGIN_SETUP.md.
+
+**Also included:** `/api/comparison` added to the Limited allow-list (fixes blank Enquiry / Test Drive / Booking / Retails pages for Limited users).
+
