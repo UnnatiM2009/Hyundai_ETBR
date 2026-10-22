@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <script src="/assets/js/vendor/chart.umd.js"></script>
-<link rel="stylesheet" href="/assets/css/style.css?v=11">
+<link rel="stylesheet" href="/assets/css/style.css?v=12">
 </head>
 <body>
 
@@ -31,6 +31,7 @@
 
     <nav class="nav">
       <button class="nav-link active" data-section="overview">Overview</button>
+      <button class="nav-link" data-section="daily">Daily Report</button>
       <button class="nav-link" data-section="enquiry">Enquiry</button>
       <button class="nav-link" data-section="followup">Enquiry Follow-up</button>
       <button class="nav-link" data-section="testdrive">Test Drive</button>
@@ -65,6 +66,7 @@
         <span class="dealer-tag">Unnati Hyundai ETBR Analysis</span>
         <h1 id="pageTitle">Overview</h1>
         <p id="pageSubtitle">Performance snapshot for the selected period</p>
+        <p id="scopeNote" class="scope-note" hidden></p>
       </div>
       <button id="themeToggle" class="ghost-btn theme-btn" title="Toggle theme">◐</button>
     </header>
@@ -178,6 +180,118 @@
         </div>
       </div>
 </section>
+
+    <!-- ---------- DAILY REPORT (Full access only) ---------- -->
+    <section class="view" id="view-daily">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="dyMonth">Month</label>
+            <select id="dyMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="dyDay">Day</label>
+            <input type="date" id="dyDay" class="filter-select">
+          </div>
+          <div class="filter-field">
+            <label for="dyModel">Model</label>
+            <select id="dyModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="dyConsultant">Consultant</label>
+            <select id="dyConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="dySource">Source</label>
+            <select id="dySource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="dySubSource">Sub-source</label>
+            <select id="dySubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
+          <button id="dyReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+        <p class="dy-note" id="dyNote">Pick a day for its enquiries, test drives, bookings and retails and the month to date. The Month, Model, Consultant, Source and Sub-source filters apply.</p>
+      </div>
+
+      <div class="kpi-grid" id="dyKpiGrid"></div>
+
+      <div class="panel dy-warn" id="dyUndated" hidden></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyScoreTitle">Consultant scorecard</h3>
+          <p>Every consultant's day and month to date side by side. Click a column heading to sort.</p>
+        </div>
+        <div class="table-wrap" id="dyScore"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyRecTitle">Customer records</h3>
+          <p id="dyRecHint"></p>
+        </div>
+        <div class="dy-rec-bar">
+          <div class="tab-row" id="dyRecTabs"></div>
+          <div class="dy-rec-right">
+            <div class="tab-row" id="dyScopeTabs">
+              <button class="tab-btn active" data-scope="day">That day</button>
+              <button class="tab-btn" data-scope="mtd">Month to date</button>
+            </div>
+            <a class="ghost-btn light-ghost dy-export" id="dyExport" href="#">Export CSV</a>
+          </div>
+        </div>
+        <div class="table-wrap tall" id="dyRecords"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyGridT-enquiry">Enquiries</h3>
+          <p>Every enquiry created, by Enquiry Date &mdash; consultant by model</p>
+        </div>
+        <div class="table-wrap" id="dyGrid-enquiry"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyGridT-testdrive">Test drives</h3>
+          <p>Enquiries with Test Drive = Y, by Enquiry Date (same rule as the Test Drive page) &mdash; consultant by model</p>
+        </div>
+        <div class="table-wrap" id="dyGrid-testdrive"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyGridT-booking">Bookings</h3>
+          <p>Enquiry Status = Booked, by Booking Date &mdash; consultant by model</p>
+        </div>
+        <div class="table-wrap" id="dyGrid-booking"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 id="dyGridT-retail">Retails</h3>
+          <p>Enquiry Status = Retail, by Retail date &mdash; consultant by model</p>
+        </div>
+        <div class="table-wrap" id="dyGrid-retail"></div>
+      </div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3>Enquiries and test drives per day</h3><p>Click a point to open that day</p></div>
+          <div class="chart-box"><canvas id="dyChartA"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Bookings, retails and booking cancels per day</h3><p>Click a bar to open that day</p></div>
+          <div class="chart-box"><canvas id="dyChartB"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Day by day</h3>
+          <p>Every day of the month so far &mdash; click a row to open that day</p>
+        </div>
+        <div class="table-wrap" id="dyDays"></div>
+      </div>
+    </section>
 
     <!-- ---------- ENQUIRY ---------- -->
     <section class="view" id="view-enquiry">
@@ -1218,6 +1332,6 @@
   </div>
 </div>
 
-<script src="/assets/js/app.js?v=15"></script>
+<script src="/assets/js/app.js?v=16"></script>
 </body>
 </html>

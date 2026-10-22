@@ -938,3 +938,69 @@ input[type="date"].filter-select { min-height: 38px; }
 #stMonthTable tbody tr.st-month-selected { background: var(--blue-soft); font-weight: 600; }
 #stMonthTable tbody td:first-child, #stMonthTable tfoot td:first-child { white-space: nowrap; }
 #stMonthTable tfoot td { font-weight: 700; border-top: 2px solid var(--border); background: var(--surface-2); }
+
+/* ==========================================================================
+   Daily report (Full access) + Team Leader scope notice
+   ========================================================================== */
+.scope-note {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--blue-soft);
+  color: var(--blue);
+  border: 1px solid var(--border);
+}
+.scope-note[hidden] { display: none; }
+.scope-note.warn { background: var(--amber-soft); color: var(--amber); }
+
+.dy-note { margin: 14px 0 0; font-size: 0.82rem; color: var(--ink-muted); line-height: 1.5; }
+.dy-warn { background: var(--amber-soft); border-color: var(--amber); color: var(--ink); font-size: 0.86rem; line-height: 1.5; }
+.dy-warn[hidden] { display: none; }
+.dy-empty { margin: 4px 0 0; padding: 18px 0; text-align: center; color: var(--ink-faint); font-size: 0.9rem; }
+
+/* Consultant x Model grids and the scorecard: grouped "that day | month to date" headings */
+.daily-table th { white-space: normal; line-height: 1.25; vertical-align: bottom; min-width: 64px; }
+.daily-table td { white-space: nowrap; }
+.daily-table th:first-child, .daily-table td:first-child { min-width: 190px; white-space: nowrap; }
+.daily-table tr.dy-group th {
+  text-align: center;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+}
+.daily-table tr.dy-group th.dy-corner { background: transparent; }
+.daily-table .dy-sep { border-left: 2px solid var(--border); }
+.daily-table td.dy-tot, .daily-table th.dy-tot { font-weight: 700; }
+.dy-zero { color: var(--ink-faint); }
+.daily-table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  border-bottom: none;
+  background: var(--surface-2);
+}
+/* keep the consultant name visible while a wide table scrolls sideways */
+.daily-table th:first-child, .daily-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.daily-table tr.dy-group th:first-child { background: var(--surface); }
+.daily-table tfoot td:first-child { background: var(--surface-2); }
+
+/* Customer records bar: record-type tabs on the left, day / month-to-date + export on the right */
+.dy-rec-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; }
+.dy-rec-bar .tab-row { margin-bottom: 0; }
+.dy-rec-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.dy-export { width: auto !important; text-decoration: none; display: inline-flex; align-items: center; padding: 0 14px; }
+#dyRecords { margin-top: 12px; }
+
+/* Day by day */
+#dyDays tbody tr[data-date] { cursor: pointer; }
+#dyDays tbody tr[data-date]:hover td { background: var(--surface-2); }
+#dyDays tbody tr.dy-selected td { background: var(--blue-soft); font-weight: 600; }
+#dyDays td:first-child { white-space: nowrap; }
+#dyDays tfoot td { font-weight: 700; border-top: 2px solid var(--border); background: var(--surface-2); }
+#view-daily > .panel { margin-bottom: 20px; }

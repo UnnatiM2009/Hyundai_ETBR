@@ -2757,8 +2757,304 @@ async function loadVehicleStock() {
   renderInventoryBreakdownTable(breakdown, activeBtn ? activeBtn.dataset.dim : "model");
 }
 
+/* ---------------------------------------------------------------------- */
+/* Daily report (Full access)                                              */
+/*   One chosen day and the month to date: KPI cards, a consultant         */
+/*   scorecard, the customer rows behind each number (with CSV export),    */
+/*   Consultant x Model tables, per-day charts and a day-by-day history.   */
+/*   Same Month / Model / Consultant / Source / Sub-source filters as every*/
+/*   other page, plus a Day picker. Figures come from /api/daily.          */
+/* ---------------------------------------------------------------------- */
+const DY_METRICS = [
+  { key: "enquiry",   label: "Enquiries",       short: "Enquiries",   color: "--blue" },
+  { key: "testdrive", label: "Test drives",     short: "Test drives", color: "--amber" },
+  { key: "booking",   label: "Bookings",        short: "Bookings",    color: "--green" },
+  { key: "retail",    label: "Retails",         short: "Retails",     color: "--purple" },
+  { key: "cancel",    label: "Booking cancels", short: "Cancels",     color: "--red" },
+];
+const dailyState = { month: null, metric: "booking", scope: "day", seq: 0, data: null };
+
+const dyWeekday = (iso) => new Intl.DateTimeFormat("en-GB", { weekday: "short" }).format(new Date(iso + "T00:00:00"));
+const dyDayText = (iso) => `${dyWeekday(iso)} ${fmtIsoLong(iso)}`;                 // "Wed 21 Oct 2026"
+const dyNum = (n) => `<span class="${n ? "" : "dy-zero"}">${fmtInt(n)}</span>`;     // zeros fade out so real numbers stand out
+const dyEl = (id) => document.getElementById(id);
+
+/* Multi-series line chart; clicking a point calls onPick(index). The selected day gets a bigger dot. */
+function dailyLineChart(canvasId, labels, datasets, titles, selectedIdx, onPick) {
+  destroyChart(canvasId);
+  const ctx = dyEl(canvasId).getContext("2d");
+  state.charts[canvasId] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: datasets.map(d => ({
+        label: d.label, data: d.values, borderColor: d.color, backgroundColor: d.color, tension: 0.3,
+        borderWidth: 2, pointBackgroundColor: d.color,
+        pointRadius: labels.map((_, i) => (i === selectedIdx ? 6 : 2.5)),
+        pointHoverRadius: 6,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12, padding: 14 } },
+        tooltip: { callbacks: { title: (items) => titles[items[0].dataIndex] } },
+      },
+      onClick: (evt, els) => { if (els.length && onPick) onPick(els[0].index); },
+      onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: baseInkColor(), maxTicksLimit: 16 } },
+        y: { grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+/* Vertical grouped columns; the selected day's bars keep full colour, the others are lightly faded. */
+function dailyColumnChart(canvasId, labels, datasets, titles, selectedIdx, onPick) {
+  destroyChart(canvasId);
+  const ctx = dyEl(canvasId).getContext("2d");
+  state.charts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: datasets.map(d => ({
+        label: d.label, data: d.values, borderRadius: 3, maxBarThickness: 18,
+        backgroundColor: labels.map((_, i) => (i === selectedIdx ? d.color : d.color + "99")),
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12, padding: 14 } },
+        tooltip: { callbacks: { title: (items) => titles[items[0].dataIndex] } },
+      },
+      onClick: (evt, els) => { if (els.length && onPick) onPick(els[0].index); },
+      onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: baseInkColor(), maxTicksLimit: 16 } },
+        y: { grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+/* A table with a "that day | month to date" grouped heading.
+   groups: [{ label, cols: [{ label, total }] }]   rows / total: { name, cells: [number, ...] } (cells flattened in group order).
+   The LAST heading row lines up one-to-one with the body columns, which is what the click-to-sort feature expects. */
+function dyTable(hostId, firstLabel, groups, rows, total, emptyText) {
+  const host = dyEl(hostId);
+  if (!rows.length) { host.innerHTML = `<p class="dy-empty">${esc(emptyText)}</p>`; return; }
+  const groupRow = `<tr class="dy-group"><th class="dy-corner"></th>` +
+    groups.map((g, gi) => `<th colspan="${g.cols.length}" class="${gi ? "dy-sep" : ""}">${esc(g.label)}</th>`).join("") + `</tr>`;
+  const colRow = `<tr><th>${esc(firstLabel)}</th>` +
+    groups.map((g, gi) => g.cols.map((c, ci) =>
+      `<th class="${[gi && !ci ? "dy-sep" : "", c.total ? "dy-tot" : ""].join(" ").trim()}">${esc(c.label)}</th>`).join("")).join("") + `</tr>`;
+  const cellsHtml = (cells) => {
+    let i = 0;
+    return groups.map((g, gi) => g.cols.map((c, ci) => {
+      const cls = [gi && !ci ? "dy-sep" : "", c.total ? "dy-tot" : ""].join(" ").trim();
+      return `<td class="${cls}">${dyNum(cells[i++])}</td>`;
+    }).join("")).join("");
+  };
+  host.innerHTML = `<table class="comparison-table daily-table">
+    <thead>${groupRow}${colRow}</thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td>${cellsHtml(r.cells)}</tr>`).join("")}</tbody>
+    <tfoot><tr><td>${esc(total.name)}</td>${cellsHtml(total.cells)}</tr></tfoot>
+  </table>`;
+}
+
+function renderDailyScorecard(d) {
+  const metrics = DY_METRICS;
+  const cols = metrics.map(m => ({ label: m.short }));
+  const cells = (o) => [...metrics.map(m => o.t[m.key]), ...metrics.map(m => o.m[m.key])];
+  const groups = [
+    { label: `On ${fmtShortDate(d.date)}`, cols },
+    { label: "Month to date", cols },
+  ];
+  dyTable("dyScore", "Consultant", groups,
+    d.scorecard.rows.map(r => ({ name: r.name, cells: cells(r) })),
+    { name: "Group total", cells: cells(d.scorecard.total) },
+    "No activity this month for these filters.");
+}
+
+function renderDailyGrids(d) {
+  d.grids.forEach(g => {
+    dyEl(`dyGridT-${g.key}`).textContent = `${g.label} — ${dyDayText(d.date)} and month to date`;
+    const cols = [...g.models.map(m => ({ label: m })), { label: "Total", total: true }];
+    const flat = (o) => [...g.models.map(m => o.t[m]), o.t.Total, ...g.models.map(m => o.m[m]), o.m.Total];
+    // flat() is "day block then month block" but each block is models + Total, so lay the groups out the same way
+    const groups = [
+      { label: `On ${fmtShortDate(d.date)}`, cols },
+      { label: "Month to date", cols },
+    ];
+    dyTable(`dyGrid-${g.key}`, "Consultant", groups,
+      g.rows.map(r => ({ name: r.name, cells: flat(r) })),
+      { name: g.total.name, cells: flat(g.total) },
+      `No ${g.label.toLowerCase()} in ${d.period_label} up to ${fmtIsoLong(d.date)} for these filters.`);
+  });
+}
+
+function renderDailyDays(d) {
+  const keys = DY_METRICS.map(m => m.key);
+  const tot = Object.fromEntries(keys.map(k => [k, 0]));
+  d.days.forEach(x => keys.forEach(k => { tot[k] += x[k]; }));
+  dyEl("dyDays").innerHTML = `<table class="comparison-table">
+    <thead><tr><th>Date</th>${DY_METRICS.map(m => `<th>${m.label}</th>`).join("")}</tr></thead>
+    <tbody>${d.days.map(x => `<tr data-date="${x.date}" class="${x.date === d.date ? "dy-selected" : ""}">
+      <td data-sort="${x.date}">${esc(dyDayText(x.date))}</td>${keys.map(k => `<td>${dyNum(x[k])}</td>`).join("")}</tr>`).join("")}</tbody>
+    <tfoot><tr><td>Total</td>${keys.map(k => `<td>${fmtInt(tot[k])}</td>`).join("")}</tr></tfoot>
+  </table>`;
+}
+
+function renderDailyCharts(d) {
+  const labels = d.days.map(x => String(+x.date.slice(8, 10)));
+  const titles = d.days.map(x => dyDayText(x.date));
+  const sel = d.days.findIndex(x => x.date === d.date);
+  const series = (key, color) => ({ label: DY_METRICS.find(m => m.key === key).label, values: d.days.map(x => x[key]), color: cssVar(color) });
+  const pick = (i) => { dyEl("dyDay").value = d.days[i].date; loadDaily(); };
+  dailyLineChart("dyChartA", labels, [series("enquiry", "--blue"), series("testdrive", "--amber")], titles, sel, pick);
+  dailyColumnChart("dyChartB", labels, [series("booking", "--green"), series("retail", "--purple"), series("cancel", "--red")], titles, sel, pick);
+}
+
+/* ---- customer rows behind a number ---- */
+function dailyRecQuery(extra = {}) {
+  const d = dailyState.data;
+  const f = readFilterBar("dy");
+  const p = new URLSearchParams(apiParams(f));
+  p.set("metric", dailyState.metric);
+  p.set("scope", dailyState.scope);
+  p.set("day", d.date);
+  Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+  return p.toString();
+}
+
+function renderDailyRecTabs() {
+  dyEl("dyRecTabs").innerHTML = DY_METRICS.map(m =>
+    `<button class="tab-btn${m.key === dailyState.metric ? " active" : ""}" data-metric="${m.key}">${m.label}</button>`).join("");
+  document.querySelectorAll("#dyScopeTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.scope === dailyState.scope));
+}
+
+async function loadDailyRecords() {
+  const d = dailyState.data;
+  if (!d) return;
+  const seq = ++dailyState.seq;
+  renderDailyRecTabs();
+  dyEl("dyExport").href = `/api/daily/export?${dailyRecQuery()}`;
+  let r;
+  try {
+    r = await getJSON(`/api/daily/records?${dailyRecQuery()}`);
+  } catch (err) {
+    if (seq === dailyState.seq) dyEl("dyRecords").innerHTML = `<p class="dy-empty">Could not load the records. Please refresh.</p>`;
+    return;
+  }
+  if (seq !== dailyState.seq) return;                     // a newer request has replaced this one
+  const mtd = dailyState.scope === "mtd";
+  const when = mtd ? `month to date, up to ${fmtIsoLong(d.date)}` : dyDayText(d.date);
+  dyEl("dyRecTitle").textContent = `${r.label} — customer records`;
+  dyEl("dyRecHint").textContent =
+    `${fmtInt(r.total)} record${r.total === 1 ? "" : "s"} · ${when}` +
+    (r.shown < r.total ? ` · showing the first ${fmtInt(r.shown)}, use Export CSV for all` : "");
+  if (!r.rows.length) {
+    dyEl("dyRecords").innerHTML = `<p class="dy-empty">No ${esc(r.label.toLowerCase())} for ${esc(when)} with these filters.</p>`;
+    return;
+  }
+  dyEl("dyRecords").innerHTML = `<table class="comparison-table text-table">
+    <thead><tr><th>Date</th><th>Customer</th><th>Phone</th><th>Model</th><th>Variant</th><th>Colour</th><th>Consultant</th>
+      <th>Source</th><th>Status</th><th>Test drive</th><th>Remarks</th></tr></thead>
+    <tbody>${r.rows.map(x => `<tr>
+      <td>${dash(x.date)}</td><td>${esc(x.customer)}</td><td>${dash(x.phone)}</td><td>${esc(x.model)}</td><td>${dash(x.variant)}</td>
+      <td>${dash(x.color)}</td><td>${esc(x.consultant)}</td><td>${esc(x.source)}</td><td>${dash(x.status)}</td>
+      <td class="num">${x.test_drive === "Y" ? badge("Done", "green") : "—"}</td><td class="wrap">${dash(x.remarks)}</td></tr>`).join("")}</tbody>
+  </table>`;
+}
+
+/* ---- the page ---- */
+async function loadDaily() {
+  await populateFilterBar("dy");
+  const f = readFilterBar("dy");
+  const dayInput = dyEl("dyDay");
+  if (dailyState.month !== f.month) dayInput.value = "";  // a different month: go to its latest active day
+  dailyState.month = f.month;
+
+  let url = `/api/daily?${apiParams(f)}`;
+  if (dayInput.value) url += `&day=${encodeURIComponent(dayInput.value)}`;
+  let d;
+  try {
+    d = await getJSON(url);
+  } catch (err) {
+    dyEl("dyNote").textContent = "Could not load the Daily report. Please refresh the page.";
+    return;
+  }
+  dailyState.data = d;
+
+  dayInput.min = d.min_date;
+  dayInput.max = d.max_date;
+  dayInput.value = d.date;
+  dyEl("dyNote").textContent = d.empty
+    ? `No enquiries, bookings or retails in ${d.period_label} for these filters.`
+    : `Showing ${dyDayText(d.date)} · month to date = 1 ${fmtIsoLong(d.min_date).slice(3)} to ${fmtIsoLong(d.date)}. ` +
+      `Figures follow the same rules as the Enquiry, Test Drive, Booking and Retails pages.`;
+
+  renderKpiGrid("dyKpiGrid", DY_METRICS.map(m => ({
+    label: m.label, value: fmtInt(d.kpis[m.key].day), color: `var(${m.color})`,
+    sub: `on ${fmtShortDate(d.date)} · month to date <strong>${fmtInt(d.kpis[m.key].mtd)}</strong>`,
+  })));
+
+  const warn = dyEl("dyUndated");
+  const und = Object.entries(d.undated || {});
+  if (und.length) {
+    const names = { booking: "booked", retail: "retailed", cancel: "booking-cancelled" };
+    warn.hidden = false;
+    warn.textContent = "Some records have no date, so they cannot be placed on a day and are left out of the figures below: " +
+      und.map(([k, n]) => `${fmtInt(n)} ${names[k]}`).join(", ") + ". The month pages still count them.";
+  } else {
+    warn.hidden = true;
+  }
+
+  dyEl("dyScoreTitle").textContent = `Consultant scorecard — ${dyDayText(d.date)} and month to date`;
+  renderDailyScorecard(d);
+  renderDailyGrids(d);
+  renderDailyCharts(d);
+  renderDailyDays(d);
+  await loadDailyRecords();
+}
+
+function initDailyReport() {
+  attachFilterBar("dy", loadDaily, {
+    extraFields: ["Day"],
+    onReset: () => { dyEl("dyDay").value = ""; dailyState.scope = "day"; },
+  });
+  dyEl("dyRecTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (!btn) return;
+    dailyState.metric = btn.dataset.metric;
+    loadDailyRecords();
+  });
+  dyEl("dyScopeTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (!btn) return;
+    dailyState.scope = btn.dataset.scope;
+    loadDailyRecords();
+  });
+  dyEl("dyDays").addEventListener("click", (e) => {
+    const tr = e.target.closest("tbody tr[data-date]");
+    if (!tr) return;
+    dyEl("dyDay").value = tr.dataset.date;
+    loadDaily();
+  });
+  // The grouped heading row ("On 21 Oct | Month to date") is not a sortable column: keep the page-wide
+  // click-to-sort from treating a click on it as a click on some column.
+  dyEl("view-daily").addEventListener("click", (e) => {
+    if (e.target.closest("tr.dy-group th")) e.stopPropagation();
+  }, true);
+}
+
 const SECTION_LOADERS = {
   overview: loadOverview,
+  daily: loadDaily,
   testdrive: loadTestDrive,
   enquiry: loadEnquiry,
   exchange: loadExchange,
@@ -2772,6 +3068,7 @@ const SECTION_LOADERS = {
 
 const SECTION_TITLES = {
   overview: ["Overview", "Performance snapshot for the selected period"],
+  daily: ["Daily report", "A day and the month to date — enquiries, test drives, bookings and retails by consultant and model"],
   testdrive: ["Test drive analytics", "Enquiry sheet column O — Y (done) vs N (not done)"],
   enquiry: ["Enquiry analytics", "Status, appointed enquiries, sources, ageing and lost reasons"],
   exchange: ["Exchange analytics", "Exchange opted, scrap, present car, maker, model and model year from the Enquiry sheet"],
@@ -2825,7 +3122,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V11`;
+  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V12`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
@@ -2901,6 +3198,23 @@ function initUploadModal() {
 /* ---------------------------------------------------------------------- */
 /* Boot                                                                     */
 /* ---------------------------------------------------------------------- */
+/* Team Leaders only: say whose data the pages are limited to (the limit itself is enforced on the server). */
+function showScopeNote(scope) {
+  const el = document.getElementById("scopeNote");
+  if (!el || !scope || !scope.restricted) return;
+  const names = scope.consultants || [];
+  el.hidden = false;
+  if (!names.length) {
+    el.classList.add("warn");
+    el.textContent = "No consultants are linked to your login yet, so there is no data to show. " +
+      "Ask the dashboard admin to add your team in the Consultants column of Data.xlsx.";
+    return;
+  }
+  el.textContent = `Team view — showing only your team's data (${names.length} consultant${names.length === 1 ? "" : "s"})`;
+  el.title = names.join("\n") + ((scope.unmatched || []).length
+    ? `\n\nNot found in the enquiry data: ${scope.unmatched.join(", ")}` : "");
+}
+
 async function boot() {
   const authResponse = await fetch('/api/auth/me');
   if (!authResponse.ok) { window.location.replace('/login'); return; }
@@ -2916,6 +3230,7 @@ async function boot() {
     document.getElementById('uploadBtn').style.display = 'none';
     document.getElementById('refreshBtn').style.display = 'none';
   }
+  showScopeNote(state.user.scope);
 
   initTheme();
   initUploadModal();
@@ -2950,6 +3265,7 @@ async function boot() {
 
   // Every page's own Month / Model / Consultant / Source filter bar
   attachFilterBar("ov", loadOverview);
+  initDailyReport();
   attachFilterBar("enq", loadEnquiry, {
     extraFields: ["Age"],
     onReset: () => { const a = document.getElementById("enqAge"); if (a) a.value = "all"; },
