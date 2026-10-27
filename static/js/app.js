@@ -976,13 +976,13 @@ function mvCompute() {
   const rows = new Map();
   const get = (i) => {
     let o = rows.get(i);
-    if (!o) { o = { v: i, enq: 0, td: 0, lost: 0, book: 0, retail: 0, fuels: new Map(), models: new Map() }; rows.set(i, o); }
+    if (!o) { o = { v: i, enq: 0, td: 0, lost: 0, book: 0, bookRetailed: 0, retail: 0, fuels: new Map(), models: new Map() }; rows.set(i, o); }
     return o;
   };
   const tally = (map, key) => { if (key !== undefined) map.set(key, (map.get(key) || 0) + 1); };
   const fuelOk = (i) => (V.fuels[i] || "").trim() !== "";
   enq.forEach(r => { const o = get(r[0]); o.enq++; o.td += r[4]; o.lost += r[5]; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
-  book.forEach(r => { const o = get(r[0]); o.book++; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
+  book.forEach(r => { const o = get(r[0]); o.book++; if (!r[8]) o.bookRetailed++; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
   retail.forEach(r => { const o = get(r[0]); o.retail++; if (fuelOk(r[2])) tally(o.fuels, r[2]); tally(o.models, r[1]); });
   const top = (map) => { let best, bn = 0; map.forEach((n, k) => { if (n > bn) { best = k; bn = n; } }); return best; };
   const list = Array.from(rows.values()).map(o => {
@@ -990,7 +990,7 @@ function mvCompute() {
     return {
       variant: V.variants[o.v], model: m === undefined ? "" : V.models[m], fuel: f === undefined ? "" : V.fuels[f],
       enquiries: o.enq, test_drives: o.td, bookings: o.book, retail: o.retail, lost: o.lost,
-      e2t: pct(o.td, o.enq), e2b: pct(o.book, o.enq), e2r: pct(o.retail, o.enq), b2r: pct(o.retail, o.book + o.retail),
+      e2t: pct(o.td, o.enq), e2b: pct(o.book, o.enq), e2r: pct(o.retail, o.enq), b2r: pct(o.bookRetailed, o.book),
     };
   });
   list.sort((a, b) => (b.enquiries - a.enquiries) || (b.bookings - a.bookings) || (b.retail - a.retail));
@@ -998,6 +998,7 @@ function mvCompute() {
   // ---- KPI cards ----
   const e = enq.length, td = enq.reduce((a, r) => a + r[4], 0), lost = enq.reduce((a, r) => a + r[5], 0);
   const b = book.length, rt = retail.length;
+  const pend = book.reduce((a, r) => a + (r[8] ? 1 : 0), 0);   // Booked, still waiting for the car
 
   // ---- chart 1: variant-wise enquiries (ignores the variant selection) ----
   const vc = new Map();
@@ -1022,9 +1023,9 @@ function mvCompute() {
   const model_options = Array.from(mo.values()).sort((a, b2) =>
     (b2.enquiries - a.enquiries) || (b2.bookings - a.bookings) || (b2.retail - a.retail));
 
-  // ---- waiting for delivery: the very same Booked rows the Bookings card counts, longest wait first ----
+  // ---- waiting for delivery: the Booked (not yet retailed) rows, longest wait first ----
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const waiting = book.map(r => {
+  const waiting = book.filter(r => r[8]).map(r => {
     const bd = r[7] || "";
     const days = bd ? Math.max(0, Math.round((today - new Date(bd + "T00:00:00")) / 86400000)) : null;
     return { customer: r[4] || "", variant: V.variants[r[0]], model: V.models[r[1]], color: r[5] || "", consultant: r[6] || "", booked: bd, days };
@@ -1035,8 +1036,8 @@ function mvCompute() {
     model: mvState.model, dim: mvState.dim, model_options, selected_model: selModel,
     period: R.period, period_label: R.period_label,
     kpis: {
-      enquiries: e, test_drives: td, test_drive_rate: pct(td, e), bookings: b, retail: rt, lost,
-      e2b: pct(b, e), e2r: pct(rt, e), b2r: pct(rt, b + rt), variant_count: list.length,
+      enquiries: e, test_drives: td, test_drive_rate: pct(td, e), bookings: b, pending: pend, retail: rt, lost,
+      e2b: pct(b, e), e2r: pct(rt, e), b2r: pct(b - pend, b), variant_count: list.length,
       top_variant: list.length ? list[0].variant : "",
     },
     variants: list, variant_chart, ageing,
@@ -1059,8 +1060,9 @@ function renderModelWindow(d) {
     `${MV_KIND[mvState.dim] || "Model Group"} · ${d.period_label} · ${fmtInt(k.variant_count)} variant(s) · ${fmtInt(k.enquiries)} enquiries` +
     (filterBits.length ? ` · ${filterBits.join(" · ")}` : "");
 
-  // Plain-language cards. Delivered + Pending always add up to Total booked, so the numbers can be checked at a glance.
-  const booked = k.bookings + k.retail;          // everyone who has booked: delivered + still pending
+  // Plain-language cards. Total booked already includes the delivered (Retail) customers; Pending = booked but not yet delivered.
+  const booked = k.bookings;                     // everyone who has booked: delivered + still pending
+  const bookedDelivered = k.bookings - k.pending; // of those bookings, already retailed
   const plural = (n, w) => `${fmtInt(n)} ${w}${n === 1 ? "" : "s"}`;
   const cards = [
     { label: "Total enquiries", value: fmtInt(k.enquiries), color: HY.navy,
@@ -1068,13 +1070,13 @@ function renderModelWindow(d) {
     { label: "Test drives", value: fmtInt(k.test_drives), color: HY.blue,
       sub: `${fmtInt(k.test_drives)} of ${fmtInt(k.enquiries)} enquiries took a test drive (${fmtPct(k.test_drive_rate)})` },
     { label: "Total booked", value: fmtInt(booked), color: HY.mid,
-      sub: booked ? `${plural(booked, "customer")} booked a car: ${fmtInt(k.retail)} delivered + ${fmtInt(k.bookings)} pending` : "Nobody has booked yet" },
+      sub: booked ? `${plural(booked, "customer")} booked a car: ${fmtInt(bookedDelivered)} delivered + ${fmtInt(k.pending)} pending` : "Nobody has booked yet" },
     { label: "Delivered (Retail)", value: fmtInt(k.retail), color: "#1C9165",
       sub: booked ? `${plural(k.retail, "customer")} already received the car` : "No delivery yet" },
-    { label: "Pending for delivery (Booked)", value: fmtInt(k.bookings), color: HY.orange,
-      sub: booked ? `${plural(k.bookings, "customer")} booked but still waiting for the car (list below)` : "Nothing pending" },
+    { label: "Pending for delivery (Booked)", value: fmtInt(k.pending), color: HY.orange,
+      sub: booked ? `${plural(k.pending, "customer")} booked but still waiting for the car (list below)` : "Nothing pending" },
     { label: "Delivery rate", value: booked ? fmtPct(k.b2r) : "\u2014", color: HY.navy,
-      sub: booked ? `${fmtInt(k.retail)} of ${fmtInt(booked)} booked customers have received their car` : "Needs at least one booking" },
+      sub: booked ? `${fmtInt(bookedDelivered)} of ${fmtInt(booked)} booked customers have received their car` : "Needs at least one booking" },
   ];
   mvEl("mvKpis").innerHTML = cards.map(c => `
     <div class="mv-kpi" style="--k:${c.color}">
@@ -3254,7 +3256,7 @@ const SECTION_TITLES = {
   exchange: ["Exchange analytics", "Exchange opted, scrap, present car, maker, model and model year from the Enquiry sheet"],
   pincode: ["PIN code analytics", "Enquiry, test drive, booking, retails and booking cancel — PIN code wise (Pin No. column of the Enquiry sheet)"],
   followup: ["Enquiry follow-up", "Day-wise and previous-days pending follow-ups, date-wise schedule, follow-up and appointed cancels"],
-  booking: ["Booking analytics", "Enquiry Status = Booked — sources, consultants, trend and booking cancels"],
+  booking: ["Booking analytics", "Enquiry Status = Booked + Retail (a retailed vehicle was a booking) — sources, consultants, trend and booking cancels"],
   sales: ["Retail analytics", "Enquiry Status = Retail — vehicles sold, by model, consultant and source"],
   inventory: ["Vehicle stock", "Physical stock and in-transit vehicles — inventory overview (aging, value, mix)"],
   stock: ["Enquiry wise stock", "Every live enquiry matched to Physical and In-Transit stock (Model + Variant + Colour)"],
