@@ -49,7 +49,7 @@ def _areas() -> dict:
 METRICS = {
     "enquiry": ("enquiry", "Enquiry Date", None),
     "testdrive": ("enquiry", "Enquiry Date", lambda d: d["Test Drive"] == "Y"),
-    "booking": ("booked", "Booking Date", None),
+    "booking": ("booked", "Booking Event Date", None),
     "retail": ("retail", "Retail date", None),
     "cancel": ("booking_cancel", "Lost Date", None),
 }

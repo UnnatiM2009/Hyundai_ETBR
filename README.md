@@ -71,8 +71,8 @@ correctly shows 0 until an export containing August is loaded.
 
 | Enquiry Status | Meaning | Counted in the month of |
 |---|---|---|
-| **Booked** | a booking | Booking Date |
-| **Retail** | a vehicle sold | Retail date |
+| **Booked** | a booking, car still pending delivery | Booking Date |
+| **Retail** | a vehicle sold (it was a booking, so it is ALSO counted in Bookings) | Retail date (both Retail and Bookings) |
 | **Booking Cancel** | cancelled booking | Lost Date |
 | **Enquiry Follow up** | open follow-up | (Next Followup Date drives the follow-up page) |
 | **Enquiry Follow up Cancel** | lost at follow-up | Lost Date |
@@ -85,10 +85,10 @@ lives at the top of `data_processor.py` (`BOOKING_STATUSES`, `RETAIL_STATUSES`, 
 it there if the DMS ever renames a status.
 
 **Definitions used**
-- *Total bookings* = status **Booked**. *Units retailed* = status **Retail**.
-- *Booking → Retail %* = Retail ÷ (Booked + Retail) — Booked customers still waiting plus
-  those already sold. (Booked alone would exceed 100% once more cars are sold than are
-  currently on order.)
+- *Total bookings* = status **Booked** (counted on Booking Date) + status **Retail** (counted on Retail date) - a vehicle sold came from a booking.
+  *Units retailed* = status **Retail**, counted separately on Retail date.
+  *Pending for delivery* = status **Booked** only (booked, car not yet delivered).
+- *Booking → Retail %* = bookings of the period that are already Retail ÷ all bookings of the period.
 - *Lost enquiries* = every status containing "Cancel" (booking, follow-up and appointed).
 - *Avg. booking age* = days from Enquiry Date to Booking Date.
   *Avg. booking → retail* = days from Booking Date to Retail date.

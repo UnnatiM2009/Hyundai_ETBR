@@ -13,7 +13,7 @@ Enquiry / Test Drive / Booking / Retails pages already use, so the Daily report 
 
     Enquiries        Enquiry Status = any, counted on Enquiry Date
     Test drives      Enquiries with Test Drive = Y, counted on Enquiry Date   (as on the Test Drive page)
-    Bookings         Enquiry Status = Booked, counted on Booking Date
+    Bookings         Enquiry Status = Booked (Booking Date) + Retail (Retail date)
     Retails          Enquiry Status = Retail, counted on Retail date
     Booking cancels  Enquiry Status = Booking Cancel, counted on Lost Date
 
@@ -42,7 +42,7 @@ store = dp.store
 METRICS = [
     ("enquiry", "enquiry", "Enquiry Date", None, "Enquiries"),
     ("testdrive", "enquiry", "Enquiry Date", "td", "Test drives"),
-    ("booking", "booked", "Booking Date", None, "Bookings"),
+    ("booking", "booked", "Booking Event Date", None, "Bookings"),
     ("retail", "retail", "Retail date", None, "Retails"),
     ("cancel", "booking_cancel", "Lost Date", None, "Booking cancels"),
 ]

@@ -9,8 +9,9 @@ separate exports - they are read from the `Enquiry Status` column:
 
     Enquiry Status              meaning
     ------------------------    -----------------------------------------
-    Booked                      a booking            (dated by Booking Date)
-    Retail                      a vehicle sold       (dated by Retail date)
+    Booked                      a booking, vehicle still pending delivery (dated by Booking Date)
+    Retail                      a vehicle sold - it WAS a booking, so it counts in Bookings
+                                (dated by Booking Date) AND separately in Retail (dated by Retail date)
     Booking Cancel              a cancelled booking  (dated by Lost Date)
     Enquiry Follow up           open follow-up       (Next Followup Date)
     Enquiry Follow up Cancel    lost at follow-up    (dated by Lost Date)
@@ -224,7 +225,8 @@ def _age_mask(df: pd.DataFrame, age: Optional[str]) -> pd.Series:
 def _empty_enquiry() -> pd.DataFrame:
     cols = list(_TEXT_COLUMNS) + _DATE_COLUMNS + [
         "Test Drive", "enquiry aging days", "Month", "Booking Month", "Retail Month", "Lost Month",
-        "Status Key", "is_lost", "is_booked", "is_retail", "is_booking_cancel", "is_followup",
+        "Booking Event Date", "Booking Event Month",
+        "Status Key", "is_lost", "is_booked", "is_retail", "is_booking", "is_booking_cancel", "is_followup",
         "is_followup_cancel", "is_appointed", "is_appointed_cancel", "booking_days", "retail_days", "Phone",
     ] + _YN_COLUMNS + _EXCHANGE_TEXT + ["Model Year"]
     return pd.DataFrame(columns=cols)
@@ -303,6 +305,9 @@ class DashboardData:
         df["Status Key"] = sk
         df["is_booked"] = sk.isin(BOOKING_STATUSES)
         df["is_retail"] = sk.isin(RETAIL_STATUSES)
+        # A sold vehicle came from a booking, so "Bookings" = Booked (pending delivery) + Retail (delivered).
+        # is_booked stays "Booked only" = bookings still waiting for the car.
+        df["is_booking"] = df["is_booked"] | df["is_retail"]
         df["is_booking_cancel"] = sk.isin(BOOKING_CANCEL_STATUSES)
         df["is_followup"] = sk.isin(FOLLOWUP_STATUSES)
         df["is_followup_cancel"] = sk.isin(FOLLOWUP_CANCEL_STATUSES)
@@ -313,6 +318,10 @@ class DashboardData:
         # ---- each event is counted in the month it actually happened ----
         df["Month"] = df["Enquiry Date"].dt.strftime("%Y-%m")
         df["Booking Month"] = _month_of(df["Booking Date"], df["Month"])
+        # "Bookings" = Booked (counted on Booking Date) + Retail (counted on Retail date, because the
+        # vehicle was delivered - and so is listed as a booking - in that month).
+        df["Booking Event Date"] = df["Booking Date"].where(~df["is_retail"], df["Retail date"].fillna(df["Booking Date"]))
+        df["Booking Event Month"] = _month_of(df["Booking Event Date"], df["Month"])
         df["Retail Month"] = _month_of(df["Retail date"], df["Month"])
         df["Lost Month"] = _month_of(df["Lost Date"], df["Month"])
 
@@ -383,6 +392,7 @@ class DashboardData:
     _MONTH_COL_TO_DATE_COL = {
         "Month": "Enquiry Date",
         "Booking Month": "Booking Date",
+        "Booking Event Month": "Booking Event Date",
         "Retail Month": "Retail date",
         "Lost Month": "Lost Date",
     }
@@ -425,7 +435,7 @@ class DashboardData:
     _KIND_SPEC = {
         "enquiry": (None, "Month"),
         "appointed": ("is_appointed", "Month"),
-        "booked": ("is_booked", "Booking Month"),
+        "booked": ("is_booking", "Booking Event Month"),   # Bookings = Booked (by Booking Date) + Retail (by Retail date)
         "retail": ("is_retail", "Retail Month"),
         "booking_cancel": ("is_booking_cancel", "Lost Month"),
         "followup_cancel": ("is_followup_cancel", "Lost Month"),
@@ -511,16 +521,16 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
 
     total_enquiries = len(enq)
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
-    total_bookings = len(booked)          # Enquiry Status = Booked
+    total_bookings = len(booked)          # Enquiry Status = Booked + Retail (retail vehicles were bookings)
     total_retail = len(retail)            # Enquiry Status = Retail (vehicle sold)
     lost_enquiries = int(enq["is_lost"].sum()) if not enq.empty else 0
     appointed = int(enq["is_appointed"].sum()) if not enq.empty else 0
 
-    # Test drive -> booking: of this period's test-driven enquiries, how many are Booked
+    # Test drive -> booking: of this period's test-driven enquiries, how many are Booked or already Retailed
     td_to_booking_rate = 0.0
     if not enq.empty:
         td = enq[enq["Test Drive"] == "Y"]
-        td_to_booking_rate = _safe_div(int(td["is_booked"].sum()), len(td))
+        td_to_booking_rate = _safe_div(int(td["is_booking"].sum()), len(td))
 
     avg_booking_age = float(booked["booking_days"].mean()) if not booked.empty else 0.0
     if pd.isna(avg_booking_age):
@@ -540,8 +550,8 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
         "appointed_cancel": len(a_cancel),
         "enquiry_to_booking_rate": _safe_div(total_bookings, total_enquiries),
         "enquiry_to_retail_rate": _safe_div(total_retail, total_enquiries),
-        # Booked customers still waiting + those already sold = every booking that is still alive
-        "booking_to_retail_rate": _safe_div(total_retail, total_bookings + total_retail),
+        # Of this period's bookings, how many have already been retailed (bookings now include retail)
+        "booking_to_retail_rate": _safe_div(int(booked["is_retail"].sum()) if not booked.empty else 0, total_bookings),
         "test_drive_to_booking_rate": td_to_booking_rate,
         "avg_booking_age_days": round(avg_booking_age, 1),
     }
@@ -657,7 +667,7 @@ def compute_test_drive_analytics(period: Optional[str], model: Optional[str] = N
     funnel = [
         {"stage": "Total Enquiries", "value": len(enq)},
         {"stage": "Test Drives Completed", "value": done_vs_not["Y"]},
-        {"stage": "Booked (of Test Drives)", "value": int(td["is_booked"].sum())},
+        {"stage": "Booked (of Test Drives)", "value": int(td["is_booking"].sum())},
         {"stage": "Retailed (of Test Drives)", "value": int(td["is_retail"].sum())},
     ]
 
@@ -717,7 +727,7 @@ def compute_exchange_analytics(period: Optional[str], model: Optional[str] = Non
         "scrap_no": int((enq["Scrap Y/N"] == "N").sum()),
         "scrap_hyundai_yes": int((enq["Scrap Through Hyundai Y/N"] == "Y").sum()),
         # exchange customers who went on to Book or Retail
-        "exchange_converted": int((ex["is_booked"] | ex["is_retail"]).sum()) if len(ex) else 0,
+        "exchange_converted": int(ex["is_booking"].sum()) if len(ex) else 0,
         "avg_car_age": round(float((this_year - yrs).mean()), 1) if len(yrs) else 0.0,
     }
 
@@ -813,7 +823,7 @@ def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None
 def compute_booking_analytics(period: Optional[str], model: Optional[str] = None,
                               consultant: Optional[str] = None, source: Optional[str] = None,
                               sub_source: Optional[str] = None) -> dict:
-    """Bookings = Enquiry Status 'Booked' (by Booking Date).
+    """Bookings = Enquiry Status 'Booked' (by Booking Date) + 'Retail' (by Retail date) - a retailed vehicle was a booking.
     Booking cancels = 'Booking Cancel' (by Lost Date)."""
     book = store.view("booked", period, model, consultant, source, sub_source=sub_source)
     cancel = store.view("booking_cancel", period, model, consultant, source, sub_source=sub_source)
@@ -827,7 +837,7 @@ def compute_booking_analytics(period: Optional[str], model: Optional[str] = None
         "by_source": _by_count(book, "Source"),
         "by_consultant": _by_count(book, "Consultant Name", 10),
         "by_model": _by_count(book, "Model"),
-        "daily_trend": _daily_counts(book, "Booking Date"),
+        "daily_trend": _daily_counts(book, "Booking Event Date"),
         "total_cancelled": int(len(cancel)),
         "cancel_reasons": cancel_reasons,
         "cancel_by_model": _by_count(cancel, "Model"),
@@ -867,7 +877,7 @@ def compute_meta() -> dict:
         "last_loaded": store.last_loaded.isoformat() if store.last_loaded else None,
         "row_counts": {
             "enquiry": int(len(e)),
-            "booking": int(e["is_booked"].sum()) if not e.empty else 0,   # status = Booked
+            "booking": int(e["is_booking"].sum()) if not e.empty else 0,   # status = Booked + Retail
             "sales": int(e["is_retail"].sum()) if not e.empty else 0,     # status = Retail
             "stock": stock_rows,
         },
@@ -934,7 +944,7 @@ def _breakdown_rows_testdrive(enq, dimension, limit):
         td = len(td_sub)
         rows.append({
             "label": k, "enquiries": cnt, "test_drives": td,
-            "test_drive_rate": _safe_div(td, cnt), "booked_from_td": int(td_sub["is_booked"].sum()),
+            "test_drive_rate": _safe_div(td, cnt), "booked_from_td": int(td_sub["is_booking"].sum()),
         })
     rows.sort(key=lambda r: r["test_drives"], reverse=True)
     return rows[:limit]
@@ -1003,7 +1013,7 @@ def _breakdown_rows_conversion(enq, book, retail, dimension, limit):
             "e2t": _safe_div(td_cnt, e_cnt),
             "e2b": _safe_div(b_cnt, e_cnt),
             "e2r": _safe_div(s_cnt, e_cnt),
-            "b2r": _safe_div(s_cnt, b_cnt + s_cnt),
+            "b2r": _safe_div(int(book[book[col] == k]["is_retail"].sum()) if not book.empty else 0, b_cnt),
         })
     rows.sort(key=lambda r: r["enquiries"], reverse=True)
     return rows[:limit]
@@ -1245,11 +1255,13 @@ def compute_model_variant_records(model: str, period: Optional[str], consultant:
             "a": df["enquiry aging days"].astype(float).values,
             "t": (df["Test Drive"] == "Y").astype(int).values,
             "l": df["is_lost"].astype(int).values,
-            # extra detail used by the "Waiting for delivery" list (status Booked rows only use these)
+            # extra detail used by the "Waiting for delivery" list (only rows with p == 1 are listed)
             "c": df["Name of the Customer"].map(_text).values,
             "col": df["Color"].map(_text).values,
             "cn": df["Consultant Name"].map(_text).values,
             "bd": df["Booking Date"].dt.strftime("%Y-%m-%d").fillna("").values,
+            # 1 = status Booked (still pending delivery), 0 = already Retailed. Booked rows now include retail.
+            "p": df["is_booked"].astype(int).values,
         }))
 
     empty = {"enq": [], "book": [], "retail": []}
@@ -1264,7 +1276,7 @@ def compute_model_variant_records(model: str, period: Optional[str], consultant:
         allr["v"], allr["m"], allr["f"] = codes["v"], codes["m"], codes["f"]
         for kind, key in (("enquiry", "enq"), ("booked", "book"), ("retail", "retail")):
             sub = allr[allr["k"] == kind]
-            cols = ["v", "m", "f", "a"] + (["t", "l"] if kind == "enquiry" else (["c", "col", "cn", "bd"] if kind == "booked" else []))
+            cols = ["v", "m", "f", "a"] + (["t", "l"] if kind == "enquiry" else (["c", "col", "cn", "bd", "p"] if kind == "booked" else []))
             empty[key] = sub[cols].values.tolist()
 
     return {
