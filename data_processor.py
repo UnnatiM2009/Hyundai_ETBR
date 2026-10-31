@@ -437,6 +437,7 @@ class DashboardData:
         "appointed": ("is_appointed", "Month"),
         "booked": ("is_booking", "Booking Event Month"),   # Bookings = Booked (by Booking Date) + Retail (by Retail date)
         "retail": ("is_retail", "Retail Month"),
+        "lost": ("is_lost", "Lost Month"),     # every lost enquiry, counted on its Lost Date (same basis as the cancel cards)
         "booking_cancel": ("is_booking_cancel", "Lost Month"),
         "followup_cancel": ("is_followup_cancel", "Lost Month"),
         "appointed_cancel": ("is_appointed_cancel", "Lost Month"),
@@ -516,6 +517,7 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
     booked = store.view("booked", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
     retail = store.view("retail", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
     b_cancel = store.view("booking_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
+    lost_view = store.view("lost", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
     f_cancel = store.view("followup_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
     a_cancel = store.view("appointed_cancel", period, model, consultant, source, age=age, mtd_day=mtd_day, sub_source=sub_source)
 
@@ -523,7 +525,7 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
     total_bookings = len(booked)          # Enquiry Status = Booked + Retail (retail vehicles were bookings)
     total_retail = len(retail)            # Enquiry Status = Retail (vehicle sold)
-    lost_enquiries = int(enq["is_lost"].sum()) if not enq.empty else 0
+    lost_enquiries = len(lost_view)       # all "Cancel" statuses, counted on Lost Date (matches Booking/Follow-up/Appointed cancel cards)
     appointed = int(enq["is_appointed"].sum()) if not enq.empty else 0
 
     # Test drive -> booking: of this period's test-driven enquiries, how many are Booked or already Retailed

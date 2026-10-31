@@ -218,12 +218,47 @@ def _read_one_sheet(xl: pd.ExcelFile, sheet: str):
     return df.dropna(how="all").reset_index(drop=True)
 
 
+# A sheet is a stock sheet when it carries a vehicle identity column like these (the Enquiry sheet never does).
+_STOCK_ID_HEADINGS = {"vin number", "vin", "vin no", "vin no.", "chassis no", "chassis no.", "chassis number",
+                      "grn no", "hmi invoice no", "hmil invoice no", "engine no"}
+_TRANSIT_SHEET_WORDS = ("despatch", "dispatch", "transit", "in-transit", "intransit")
+
+
+def _sheet_type_from_contents(xl: pd.ExcelFile, sheet: str):
+    """For workbooks whose sheets are just 'Sheet1/Sheet2/Sheet3' (no 'Physical Stock' / 'In Transit' names).
+    Returns (is_stock_sheet, kind) where kind is PHYSICAL / TRANSIT / None (None = could not tell)."""
+    try:
+        df = _read_one_sheet(xl, sheet)
+    except Exception:
+        return False, None
+    if df is None or df.empty:
+        return False, None
+    heads = {str(c).strip().lower() for c in df.columns}
+    if "enquiry status" in heads or "enquiry date" in heads or not (heads & _STOCK_ID_HEADINGS):
+        return False, None
+    # 'Stock Status' says "Free Stock" on the physical sheet and "Despatch" on the in-transit sheet.
+    # (The 'In Out Status' column says 'In Transit' on both, so it is deliberately ignored.)
+    col = next((c for c in df.columns if str(c).strip().lower() in ("stock status", "status of stock")), None)
+    if col is not None:
+        vals = df[col].dropna().astype(str).str.lower()
+        if len(vals):
+            transit_share = vals.str.contains("|".join(_TRANSIT_SHEET_WORDS), regex=True).mean()
+            return True, (TRANSIT if transit_share >= 0.5 else PHYSICAL)
+    return True, None
+
+
 def typed_sheets(path: str) -> list:
     """Sheets whose NAME says what the stock is: 'Physical Stock' -> Physical,
     'In Transit' -> In Transit. When a workbook has these, the sheet name is the truth
-    (the 'In Out Status' column in the DMS export says 'In Transit' on both sheets)."""
+    (the 'In Out Status' column in the DMS export says 'In Transit' on both sheets).
+
+    If the sheets have generic names (Sheet1, Sheet2, Sheet3 ...) the stock sheets are recognised by their
+    CONTENT instead: a sheet with VIN / GRN / invoice columns is stock; 'Stock Status' = Free Stock ->
+    Physical, Despatch -> In Transit (when that column is missing, the first stock sheet is Physical and
+    the next ones are In Transit)."""
     try:
-        names = pd.ExcelFile(path).sheet_names
+        xl = pd.ExcelFile(path)
+        names = xl.sheet_names
     except Exception:
         return []
     out = []
@@ -233,6 +268,15 @@ def typed_sheets(path: str) -> list:
             out.append((n, TRANSIT))
         elif "physical" in low:
             out.append((n, PHYSICAL))
+    if out:
+        return out
+    found = []
+    for n in names:
+        is_stock, kind = _sheet_type_from_contents(xl, n)
+        if is_stock:
+            found.append((n, kind))
+    for i, (n, kind) in enumerate(found):
+        out.append((n, kind or (PHYSICAL if i == 0 else TRANSIT)))
     return out
 
 
