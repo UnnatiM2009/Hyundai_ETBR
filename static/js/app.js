@@ -3246,6 +3246,9 @@ const SECTION_LOADERS = {
   inventory: loadVehicleStock,
   stock: loadStock,
   comparison: loadComparison,
+  cancellations: loadCancellations,
+  forecast: loadForecast,
+  insights: loadInsights,
 };
 
 const SECTION_TITLES = {
@@ -3261,6 +3264,9 @@ const SECTION_TITLES = {
   inventory: ["Vehicle stock", "Physical stock and in-transit vehicles — inventory overview (aging, value, mix)"],
   stock: ["Enquiry wise stock", "Every live enquiry matched to Physical and In-Transit stock (Model + Variant + Colour)"],
   comparison: ["Month comparison", "Current month vs the previous month, metric by metric"],
+  cancellations: ["Booking cancellations", "Every cancelled booking (Enquiry Status = Booking Cancel): who, why, how quickly, and which customers"],
+  forecast: ["Forecast (ML)", "Where enquiries, test drives, bookings and retails are heading over the coming months, with a low and high case"],
+  insights: ["Management insights", "Outlook, who is declining, predicted conversion, consultant productivity and plain-language findings"],
 };
 
 /* ---------------------------------------------------------------------- */
@@ -3399,6 +3405,549 @@ function showScopeNote(scope) {
   el.title = names.join("\n") + ((scope.unmatched || []).length
     ? `\n\nNot found in the enquiry data: ${scope.unmatched.join(", ")}` : "");
 }
+
+/* ====================================================================== */
+/* Booking Cancellations / Forecast (ML) / Management Insights             */
+/* (Full-access screens; each reads its own /api/... route)                 */
+/* ====================================================================== */
+const rangeCell = (mid, low, high, fmt = fmtInt) =>
+  `<span class="big">${fmt(mid)}</span><span class="rng">${fmt(low)} – ${fmt(high)}</span>`;
+const pctCell = (r) => (r ? rangeCell(r.mid, r.low, r.high, fmtPct) : "—");
+const shortMonth = (iso) => fmtShortDate(iso);
+const SERIES_COLORS = () => ({
+  enquiries: cssVar("--blue"), test_drives: cssVar("--amber"), bookings: cssVar("--green"), retails: cssVar("--purple"),
+});
+const FC_LABEL = { enquiries: "Enquiries", test_drives: "Test drives", bookings: "Total bookings", retails: "Retails" };
+const noteBox = (html, tone = "") => `<div class="note-box ${tone}">${html}</div>`;
+
+/* A horizontal bar chart whose bars take a colour each (used by the Insights charts). */
+function hBarColoured(canvasId, labels, values, colors, fmt = (v) => v) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  state.charts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4, maxBarThickness: 22 }] },
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => fmt(c.parsed.x) } } },
+      scales: {
+        x: { grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), callback: (v) => fmt(v) } },
+        y: { grid: { display: false }, ticks: { color: baseInkColor(), autoSkip: false } },
+      },
+    },
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Booking Cancellations                                                    */
+/* ---------------------------------------------------------------------- */
+const cnState = { basis: "cancel", dim: "consultant", data: null, pick: null, search: "" };
+const CN_TITLE = { consultant: "By sales consultant", model: "By model", variant: "By variant", color: "By colour",
+                   source: "By source", reason: "By cancel reason" };
+const CN_FIELD = { consultant: "consultant", model: "model", variant: "variant", color: "color", source: "source", reason: "reason" };
+
+function cnQuery() {
+  return `${apiParams(readFilterBar("cn"))}&basis=${cnState.basis}&dim=${cnState.dim}`;
+}
+
+async function loadCancellations() {
+  await populateFilterBar("cn");
+  const data = await getJSON(`/api/cancellations?${cnQuery()}`);
+  cnState.data = data;
+  cnState.pick = null;
+  document.querySelectorAll("#cnBasisTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.basis === cnState.basis));
+  document.getElementById("cnBasisNote").textContent = cnState.basis === "cancel"
+    ? "Counted in the month the booking was cancelled (the sheet's Lost Date): the same basis as the Overview “Booking cancel” card."
+    : "Counted in the month the booking was made, so “% of bookings cancelled” is exact for that month.";
+  document.getElementById("cnMonthTitle").textContent =
+    cnState.basis === "cancel" ? "Cancellations by month (cancel date)" : "Cancellations by month (booking date)";
+  renderCancellations();
+}
+
+function renderCancellations() {
+  const d = cnState.data;
+  if (!d || d.empty) return;
+  const k = d.kpis;
+  const monthText = monthLabelOf(readFilterBar("cn").month);
+  renderKpiGrid("cnKpiGrid", [
+    { label: "Cancelled bookings", value: fmtInt(k.cancelled), color: "var(--red)",
+      sub: d.show_pct ? `${fmtInt(k.bookings_made)} bookings made in ${monthText} · ${k.cancel_pct === null ? "—" : fmtPct(k.cancel_pct)} cancelled`
+                      : `cancelled in ${monthText}` },
+    { label: "Average days to cancel", value: k.avg_days === null ? "—" : k.avg_days.toFixed(1), color: "var(--amber)",
+      sub: k.median_days === null ? "no cancellations" : `median ${k.median_days.toFixed(1)} days from booking` },
+    { label: "Cancelled within 7 days", value: fmtInt(k.quick), color: "var(--blue)",
+      sub: k.quick_pct === null ? "—" : `${fmtPct(k.quick_pct)} of cancellations` },
+    { label: "Cancelled after 30+ days", value: fmtInt(k.late), color: "var(--purple)", sub: "booked more than a month earlier" },
+    { label: "Top reason", value: k.top_reason ? fmtInt(k.top_reason.count) : "—", color: "var(--red)",
+      sub: k.top_reason ? esc(k.top_reason.label) : "no reason captured" },
+    { label: "Most cancellations", value: k.top_consultant ? fmtInt(k.top_consultant.count) : "—", color: "var(--green)",
+      sub: k.top_consultant ? `${esc(k.top_consultant.label)} · ${fmtInt(k.consultants)} consultant(s) affected` : "—" },
+  ]);
+
+  const months = d.by_month || [];
+  const cur = readFilterBar("cn").month;
+  colouredBarChart("cnMonthChart", months.map(m => m.label), months.map(m => m.cancelled),
+    months.map(m => (m.month === cur ? cssVar("--red") : cssVar("--sky") || "#9FDCEE")));
+  const rs = d.reasons || [];
+  barChart("cnReasonChart", rs.map(x => x.label), rs.map(x => x.value), cssVar("--red"));
+
+  renderCancelTable();
+  renderCancelList();
+  const rec = document.getElementById("cnRecon");
+  const bits = [];
+  if (d.recon) bits.push(d.recon.agree
+    ? `This page and the Overview “Booking cancel” card agree: ${fmtInt(d.recon.this_page)} for ${monthText}.`
+    : `Overview “Booking cancel” card shows ${fmtInt(d.recon.overview_card)}, this page ${fmtInt(d.recon.this_page)}.`);
+  if (d.invoice_cancel) bits.push(`${fmtInt(d.invoice_cancel)} “Invoice Cancel” row(s) in this selection are not counted here (an invoice cancelled after retail); they are included in Lost enquiries.`);
+  rec.textContent = bits.join(" ");
+}
+
+function renderCancelTable() {
+  const d = cnState.data;
+  const dim = cnState.dim;
+  const rows = (d.tables && d.tables[dim]) || [];
+  document.getElementById("cnTableTitle").textContent = CN_TITLE[dim];
+  const pct = d.show_pct;
+  document.getElementById("cnTableHead").innerHTML =
+    `<tr><th>${d.dim_labels[dim]}</th><th>Cancelled</th><th>Share</th><th>Avg days to cancel</th><th>Within 7 days</th>` +
+    (pct ? `<th>Bookings made</th><th>% cancelled</th>` : "") + `</tr>`;
+  const body = document.getElementById("cnTableBody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${pct ? 7 : 5}" class="empty-cell">No cancelled bookings for this selection.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `<tr class="row-click${cnState.pick === r.label ? " selected" : ""}" tabindex="0" data-label="${esc(r.label)}">
+    <td>${esc(r.label)}</td><td>${fmtInt(r.cancelled)}</td><td>${fmtPct(r.share)}</td>
+    <td>${r.avg_days === null ? "—" : r.avg_days.toFixed(1)}</td>
+    <td>${fmtInt(r.quick)}${r.quick_pct === null ? "" : ` <span class="muted-sm">(${fmtPct(r.quick_pct)})</span>`}</td>
+    ${pct ? `<td>${fmtInt(r.bookings)}</td><td>${r.cancel_pct === null ? "—" : fmtPct(r.cancel_pct)}</td>` : ""}</tr>`).join("");
+}
+
+function cnVisibleRows() {
+  const d = cnState.data;
+  let rows = d.rows || [];
+  if (cnState.pick !== null) {
+    const f = CN_FIELD[cnState.dim];
+    rows = rows.filter(r => ((r[f] || "Not captured") === cnState.pick));
+  }
+  const q = cnState.search.trim().toLowerCase();
+  if (q) rows = rows.filter(r => [r.customer, r.mobile, r.consultant, r.model, r.variant, r.color, r.source, r.reason, r.lost_remark, r.remarks]
+    .join(" ").toLowerCase().includes(q));
+  return rows;
+}
+
+function renderCancelList() {
+  const d = cnState.data;
+  const rows = cnVisibleRows();
+  const body = document.getElementById("cnListBody");
+  body.innerHTML = rows.length ? rows.map(r => `<tr>
+    <td class="nw">${dash(fmtIsoLong(r.cancel_date))}</td><td class="nw">${dash(fmtIsoLong(r.booking_date))}</td><td>${r.days === null ? "—" : r.days}</td>
+    <td class="left">${dash(r.customer)}<br><span class="muted-sm">${dash(r.customer_id)}</span></td><td>${dash(r.mobile)}</td>
+    <td class="left">${dash(r.consultant)}</td><td class="left">${dash(r.model)}</td><td class="left">${dash(r.variant)}</td>
+    <td class="left">${dash(r.color)}</td><td class="left">${dash(r.source)}</td><td class="left">${r.reason ? badge(r.reason, "red") : "—"}</td>
+    <td class="wrap-cell">${dash(r.lost_remark)}</td><td class="wrap-cell">${dash(r.remarks)}</td></tr>`).join("")
+    : `<tr><td colspan="13" class="empty-cell">No cancelled bookings match.</td></tr>`;
+  const picked = cnState.pick !== null;
+  document.getElementById("cnListTitle").textContent = picked ? `Cancelled bookings: ${cnState.pick}` : "Cancelled bookings";
+  document.getElementById("cnListNote").textContent =
+    `Showing ${fmtInt(rows.length)} of ${fmtInt(d.row_total)} cancelled booking(s), newest cancellation first.`;
+  document.getElementById("cnClear").hidden = !picked;
+  document.getElementById("cnExport").href = `/api/cancellations/export?${apiParams(readFilterBar("cn"))}&basis=${cnState.basis}`;
+}
+
+function initCancellations() {
+  attachFilterBar("cn", loadCancellations);
+  document.getElementById("cnBasisTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn");
+    if (!b) return;
+    cnState.basis = b.dataset.basis;
+    loadCancellations();
+  });
+  document.getElementById("cnDimTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn");
+    if (!b) return;
+    cnState.dim = b.dataset.dim;
+    cnState.pick = null;
+    document.querySelectorAll("#cnDimTabs .tab-btn").forEach(x => x.classList.toggle("active", x === b));
+    renderCancelTable();
+    renderCancelList();
+  });
+  const pickRow = (tr) => {
+    if (!tr) return;
+    const label = tr.dataset.label;
+    cnState.pick = cnState.pick === label ? null : label;
+    renderCancelTable();
+    renderCancelList();
+    if (cnState.pick !== null) document.getElementById("cnListTitle").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  document.getElementById("cnTableBody").addEventListener("click", (e) => pickRow(e.target.closest("tr.row-click")));
+  document.getElementById("cnTableBody").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickRow(e.target.closest("tr.row-click")); }
+  });
+  document.getElementById("cnClear").addEventListener("click", () => { cnState.pick = null; renderCancelTable(); renderCancelList(); });
+  document.getElementById("cnSearch").addEventListener("input", (e) => { cnState.search = e.target.value; renderCancelList(); });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Forecast (ML)                                                            */
+/* ---------------------------------------------------------------------- */
+const fcState = { ahead: 3, series: "enquiries", data: null, modelMonth: null };
+
+async function loadForecast() {
+  const d = await getJSON(`/api/forecast?ahead=${fcState.ahead}`);
+  fcState.data = d;
+  const empty = document.getElementById("fcEmpty");
+  const body = document.getElementById("fcBody");
+  if (d.empty) {
+    empty.hidden = false; body.hidden = true;
+    document.getElementById("fcEmptyMsg").textContent = d.message || "";
+    return;
+  }
+  empty.hidden = true; body.hidden = false;
+  document.querySelectorAll("#fcAheadTabs .tab-btn").forEach(b => b.classList.toggle("active", Number(b.dataset.ahead) === fcState.ahead));
+  document.querySelectorAll("#fcSeriesTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.series === fcState.series));
+  const badgeEl = document.getElementById("fcBadge");
+  badgeEl.textContent = d.badge.text;
+  badgeEl.className = `fc-badge ${d.badge.tone}`;
+  document.getElementById("fcIntro").textContent =
+    `Learned from the Enquiry sheet up to ${fmtIsoLong(d.as_of)} (${d.history_days} days). Low and high are an 80% range, not a promise.`;
+  document.getElementById("fcNotes").innerHTML = (d.notes || []).map((n, i) => noteBox(esc(n), i === 0 && d.badge.tone === "amber" ? "amber" : "")).join("");
+  renderFcKpis(d);
+  renderFcMonthTable(d);
+  renderFcCharts();
+  fcState.modelMonth = (d.months.find(m => m.month === fcState.modelMonth) || d.months[Math.min(1, d.months.length - 1)]).month;
+  renderFcModels(d);
+  renderFcOpen(d);
+  renderFcBack(d);
+}
+
+function renderFcKpis(d) {
+  const m = d.months[0];
+  const col = SERIES_COLORS();
+  renderKpiGrid("fcKpiGrid", ["enquiries", "test_drives", "bookings", "retails"].map(k => {
+    const s = m.series[k];
+    return { label: `${FC_LABEL[k]} · ${m.label} (expected)`, value: fmtInt(s.mid), color: col[k],
+      sub: `${fmtInt(s.actual)} so far · range ${fmtInt(s.low)} – ${fmtInt(s.high)}` };
+  }));
+}
+
+function renderFcMonthTable(d) {
+  document.getElementById("fcMonthHead").innerHTML =
+    `<tr><th class="left">Metric</th>${d.months.map(m => `<th>${esc(m.label)}${m.status === "current" ? `<br><span class="muted-sm">so far + rest of month</span>` : ""}</th>`).join("")}</tr>`;
+  const rows = ["enquiries", "test_drives", "bookings", "retails"].map(k =>
+    `<tr><td>${FC_LABEL[k]}</td>${d.months.map(m => `<td>${rangeCell(m.series[k].mid, m.series[k].low, m.series[k].high)}</td>`).join("")}</tr>`);
+  const ratio = [["E2T", "Enquiry → Test drive"], ["E2B", "Enquiry → Booking"], ["E2R", "Enquiry → Retail"], ["B2R", "Booking → Retail"]].map(([key, label]) =>
+    `<tr><td>${label}</td>${d.months.map(m => `<td>${pctCell(m.ratios[key])}</td>`).join("")}</tr>`);
+  document.getElementById("fcMonthBody").innerHTML = rows.join("") + ratio.join("");
+}
+
+function renderFcCharts() {
+  const d = fcState.data;
+  if (!d || d.empty) return;
+  const k = fcState.series;
+  const col = SERIES_COLORS()[k];
+  document.getElementById("fcChartTitle").textContent = `${FC_LABEL[k]}: running total, weekly and monthly`;
+  document.getElementById("fcCumTitle").textContent = `${d.months[0].label}, running total`;
+
+  // ---- this month, running total ----
+  const c = d.cumulative[k];
+  const nAct = c.actual.length;
+  const labels = c.dates.map(shortMonth);
+  const actual = labels.map((_, i) => (i < nAct ? c.actual[i] : null));
+  // the last actual day joins the actual and forecast lines
+  // mid / low / high hold ONLY the days after the last actual day (index 0 = the first forecast day)
+  const fromFc = (arr) => labels.map((_, i) => (i < nAct - 1 ? null : (i === nAct - 1 ? c.actual[nAct - 1] : arr[i - nAct])));
+  const restMid = fromFc(c.mid), restLow = fromFc(c.low), restHigh = fromFc(c.high);
+  destroyChart("fcCumChart");
+  state.charts.fcCumChart = new Chart(document.getElementById("fcCumChart").getContext("2d"), {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "Actual", data: actual, borderColor: col, backgroundColor: col, tension: 0.25, pointRadius: 0, borderWidth: 2.5 },
+      { label: "High", data: restHigh, borderColor: "transparent", backgroundColor: col + "22", pointRadius: 0, fill: "+1", tension: 0.25 },
+      { label: "Low", data: restLow, borderColor: "transparent", pointRadius: 0, fill: false, tension: 0.25 },
+      { label: "Forecast", data: restMid, borderColor: col, borderDash: [6, 5], pointRadius: 0, borderWidth: 2.5, fill: false, tension: 0.25 },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12, filter: (it) => !["High", "Low"].includes(it.text) } } },
+      scales: { x: { grid: { display: false }, ticks: { color: baseInkColor(), maxTicksLimit: 10 } },
+                y: { beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } } },
+    },
+  });
+
+  // ---- week by week ----
+  const w = d.weekly;
+  destroyChart("fcWeekChart");
+  state.charts.fcWeekChart = new Chart(document.getElementById("fcWeekChart").getContext("2d"), {
+    type: "bar",
+    data: { labels: w.weeks, datasets: [
+      { label: "Actual", data: w.series[k].actual, backgroundColor: col, borderRadius: 4, maxBarThickness: 26 },
+      { label: "Forecast", data: w.series[k].forecast, backgroundColor: col + "66", borderColor: col, borderWidth: 1, borderRadius: 4, maxBarThickness: 26 },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12 } } },
+      scales: { x: { grid: { display: false }, ticks: { color: baseInkColor(), maxRotation: 60 } },
+                y: { beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } } },
+    },
+  });
+
+  // ---- month by month ----
+  const past = (d.past_months || []);
+  const mLabels = [...past.map(p => p.label), ...d.months.map(m => m.label)];
+  const actualM = [...past.map(p => p[k]), d.months[0].series[k].actual, ...d.months.slice(1).map(() => null)];
+  const fcM = [...past.map(() => null), d.months[0].series[k].forecast_rest, ...d.months.slice(1).map(m => m.series[k].mid)];
+  const rangeOf = (i) => { const j = i - past.length; return j >= 0 ? d.months[j].series[k] : null; };
+  destroyChart("fcMonthChart");
+  state.charts.fcMonthChart = new Chart(document.getElementById("fcMonthChart").getContext("2d"), {
+    type: "bar",
+    data: { labels: mLabels, datasets: [
+      { label: "Actual", data: actualM, backgroundColor: col, borderRadius: 4, maxBarThickness: 60, stack: "m" },
+      { label: "Forecast", data: fcM, backgroundColor: col + "66", borderColor: col, borderWidth: 1, borderRadius: 4, maxBarThickness: 60, stack: "m" },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12 } },
+        tooltip: { callbacks: { afterBody: (items) => { const s = rangeOf(items[0].dataIndex);
+          return s ? [`Expected ${fmtInt(s.mid)} (80% range ${fmtInt(s.low)} – ${fmtInt(s.high)})`] : []; } } },
+      },
+      scales: { x: { stacked: true, grid: { display: false }, ticks: { color: baseInkColor() } },
+                y: { stacked: true, beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } } },
+    },
+  });
+  document.getElementById("fcChartNote").textContent = k === "bookings"
+    ? "Total bookings are counted exactly as on the Bookings page: Booked on the booking date, plus Retail on the retail date. Daily and weekly bars place each booking on its own event date."
+    : k === "retails" ? "Retails follow the booking-to-retail pipeline, scaled to the recent delivery pace when stock or dispatch is the limit."
+    : "Test drives follow the Enquiry sheet's Test Drive column (Y), counted on the enquiry date, like the Test Drive page.";
+}
+
+function renderFcModels(d) {
+  const tabs = document.getElementById("fcModelTabs");
+  tabs.innerHTML = d.months.map(m => `<button class="tab-btn${m.month === fcState.modelMonth ? " active" : ""}" data-month="${m.month}">${esc(m.label)}</button>`).join("");
+  const rows = (d.models[fcState.modelMonth] || []);
+  document.getElementById("fcModelNote").textContent =
+    "The month's forecast split by each model's share of the last 28 days (its share of enquiries, test drives, bookings and retails). The ranges are scaled the same way.";
+  document.getElementById("fcModelHead").innerHTML =
+    `<tr><th class="left">Model</th><th>Enquiries</th><th>Test drives</th><th>Total bookings</th><th>Retails</th></tr>`;
+  document.getElementById("fcModelBody").innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.model)}</td>${
+    ["enquiries", "test_drives", "bookings", "retails"].map(k => `<td>${rangeCell(r[k], r[k + "_low"], r[k + "_high"], (v) => (v < 10 ? v.toFixed(1) : fmtInt(v)))}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="5" class="empty-cell">No model data.</td></tr>`;
+}
+
+function renderFcOpen(d) {
+  const o = d.open, k = o.kpis;
+  document.getElementById("fcOpenNote").textContent =
+    "Bookings still waiting for delivery (status Booked), and how many the booking-to-retail history says will be delivered or cancelled.";
+  renderKpiGrid("fcOpenKpis", [
+    { label: "Open bookings", value: fmtInt(k.open), color: "var(--blue)", sub: `average age ${k.avg_age} days` },
+    { label: "Waiting 30+ days", value: fmtInt(k.over_30), color: "var(--red)", sub: "needs a call this week" },
+    { label: "Expected retails · next 14 days", value: k.expected_14.toFixed(1), color: "var(--green)", sub: "from today's open bookings" },
+    { label: "Expected retails · next 30 days", value: k.expected_30.toFixed(1), color: "var(--purple)", sub: "from today's open bookings" },
+    { label: "Expected cancels · next 30 days", value: k.cancel_30.toFixed(1), color: "var(--amber)", sub: "of the open bookings" },
+  ]);
+  document.getElementById("fcOpenHead").innerHTML =
+    `<tr><th class="left">Model</th><th>Open bookings</th><th>Average age (days)</th><th>Oldest (days)</th><th>Expected retails · 30 days</th><th>% of open</th></tr>`;
+  document.getElementById("fcOpenBody").innerHTML = o.rows.length ? o.rows.map(r => `<tr><td>${esc(r.model)}</td><td>${fmtInt(r.open)}</td>
+    <td>${r.avg_age.toFixed(1)}</td><td>${fmtInt(r.oldest)}</td><td>${r.expected_30.toFixed(1)}</td><td>${fmtPct(r.share)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty-cell">No open bookings.</td></tr>`;
+}
+
+function renderFcBack(d) {
+  document.getElementById("fcBackHead").innerHTML =
+    `<tr><th class="left">Series</th><th class="left">Model used</th><th>Typical miss (14-day total)</th><th>Plain average would miss</th><th>Tests</th></tr>`;
+  document.getElementById("fcBackBody").innerHTML = d.backtest.map(b => `<tr><td>${esc(b.series)}</td><td class="left">${esc(b.model)}</td>
+    <td>${fmtPct(b.miss)}</td><td>${b.baseline_miss === null ? "—" : fmtPct(b.baseline_miss)}</td><td>${fmtInt(b.folds)}</td></tr>`).join("");
+  document.getElementById("fcMethod").innerHTML = (d.method || []).map(t => `<li>${esc(t)}</li>`).join("");
+}
+
+function initForecast() {
+  document.getElementById("fcAheadTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn");
+    if (!b) return;
+    fcState.ahead = Number(b.dataset.ahead);
+    loadForecast();
+  });
+  document.getElementById("fcSeriesTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn");
+    if (!b) return;
+    fcState.series = b.dataset.series;
+    document.querySelectorAll("#fcSeriesTabs .tab-btn").forEach(x => x.classList.toggle("active", x === b));
+    renderFcCharts();
+  });
+  document.getElementById("fcModelTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn");
+    if (!b || !fcState.data) return;
+    fcState.modelMonth = b.dataset.month;
+    renderFcModels(fcState.data);
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Management Insights                                                      */
+/* ---------------------------------------------------------------------- */
+const inState = { data: null, kind: "all", series: "enquiries", declineDim: "consultant", convDim: "consultant" };
+const IN_KIND = { risk: ["Needs action", "red"], watch: ["Watch", "amber"], good: ["Good news", "green"], data: ["Data & forecast", "purple"] };
+const IN_STATUS = { declining: ["Declining", "red"], inactive: ["No activity", "red"], watch: ["Watch", "amber"], stable: ["Stable", "grey"],
+                    improving: ["Improving", "green"], new: ["New", "blue"] };
+
+async function loadInsights() {
+  const d = await getJSON("/api/insights");
+  inState.data = d;
+  const empty = document.getElementById("inEmpty"), body = document.getElementById("inBody");
+  if (d.empty) { empty.hidden = false; body.hidden = true; document.getElementById("inEmptyMsg").textContent = d.message || ""; return; }
+  empty.hidden = true; body.hidden = false;
+  const b = document.getElementById("inBadge");
+  b.textContent = d.badge.text; b.className = `fc-badge ${d.badge.tone}`;
+  document.getElementById("inIntro").textContent = d.intro;
+  document.getElementById("inNotes").innerHTML = (d.notes || []).map(n => noteBox(esc(n), d.badge.tone === "amber" ? "amber" : "")).join("");
+  const col = { blue: "var(--blue)", green: "var(--green)", purple: "var(--purple)", amber: "var(--amber)" };
+  renderKpiGrid("inKpiGrid", d.kpis.map(k => {
+    const f = k.pct ? fmtPct : fmtInt;
+    const delta = k.ref ? ((k.value - k.ref) / k.ref * 100) : null;
+    const dtxt = delta === null ? "" : ` · <span class="${delta >= 0 ? "up-good" : "down-bad"}">${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(0)}%</span> vs ${esc(k.ref_label)}`;
+    return { label: k.label, value: f(k.value), color: col[k.tone], sub: `range ${f(k.low)} – ${f(k.high)}${dtxt}` };
+  }));
+  renderInObs();
+  renderInTrack();
+  renderInDecline();
+  renderInConv();
+  renderInProd();
+}
+
+function renderInObs() {
+  const d = inState.data;
+  document.querySelectorAll("#inObsTabs .tab-btn").forEach(b => {
+    const kind = b.dataset.kind;
+    const n = kind === "all" ? d.observations.length : d.observations.filter(o => o.kind === kind).length;
+    b.textContent = `${{ all: "All", risk: "Needs action", watch: "Watch", good: "Good news", data: "Data & forecast" }[kind]} (${n})`;
+    b.classList.toggle("active", kind === inState.kind);
+  });
+  const list = d.observations.filter(o => inState.kind === "all" || o.kind === inState.kind);
+  document.getElementById("inObs").innerHTML = list.length ? list.map(o => `<div class="obs-item ${o.kind}">
+      <div class="obs-top">${badge(IN_KIND[o.kind][0], IN_KIND[o.kind][1])}${badge(o.area, "grey")}<span class="obs-title">${esc(o.title)}</span></div>
+      <div class="obs-evidence">${esc(o.evidence)}</div>
+      <div class="obs-action"><b>Next step:</b> ${esc(o.action)}</div></div>`).join("")
+    : `<div class="obs-item"><div class="obs-evidence">Nothing to report in this group.</div></div>`;
+}
+
+function renderInTrack() {
+  const d = inState.data, t = d.track;
+  const col = SERIES_COLORS();
+  document.getElementById("inTrackIntro").textContent =
+    "A walk-forward check: for each of the last few weeks, what the forecast model would have predicted knowing only the days before, against what really happened.";
+  renderKpiGrid("inTrackKpis", t.summary.map(s => ({
+    label: `${s.label} · weekly accuracy`, value: fmtPct(s.accuracy), color: col[s.key],
+    sub: `${s.weeks} weeks: ${fmtInt(s.actual)} actual vs ${fmtInt(s.forecast)} forecast (${s.bias >= 0 ? "+" : ""}${s.bias.toFixed(0)}%)` })));
+  document.querySelectorAll("#inTrackTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.series === inState.series));
+  const k = inState.series, w = t.weeks;
+  destroyChart("inTrackChart");
+  state.charts.inTrackChart = new Chart(document.getElementById("inTrackChart").getContext("2d"), {
+    type: "bar",
+    data: { labels: w.labels, datasets: [
+      { label: "Actual", data: w.series[k].actual, backgroundColor: col[k], borderRadius: 4, maxBarThickness: 40 },
+      { label: "Forecast", data: w.series[k].forecast, backgroundColor: col[k] + "66", borderColor: col[k], borderWidth: 1, borderRadius: 4, maxBarThickness: 40 },
+    ] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { color: baseInkColor(), boxWidth: 12 } } },
+      scales: { x: { grid: { display: false }, ticks: { color: baseInkColor() } },
+                y: { beginAtZero: true, grid: { color: baseGridColor() }, ticks: { color: baseInkColor(), precision: 0 } } } },
+  });
+  const m = (t.months || [])[0];
+  document.getElementById("inTrackMonthHead").innerHTML = `<tr><th class="left">${m ? esc(m.label) : "Month"}</th><th>Forecast</th><th>Actual</th><th>Miss</th></tr>`;
+  document.getElementById("inTrackMonthBody").innerHTML = m ? m.rows.map(r => `<tr><td>${esc(r.label)}</td><td>${fmtInt(r.forecast)}</td><td>${fmtInt(r.actual)}</td>
+    <td><span class="${Math.abs(r.error) <= 15 ? "up-good" : "down-bad"}">${r.error >= 0 ? "+" : ""}${r.error.toFixed(0)}%</span></td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty-cell">Needs at least four weeks of history before the 1st of the month.</td></tr>`;
+  document.getElementById("inTrackNote").textContent = m
+    ? `Made on the 1st from the ${m.train_days} days before it. Test-drive recording rose sharply in October, which a model trained on September cannot foresee. The model type per series is today's choice; every parameter is re-fitted on earlier days only.`
+    : "";
+}
+
+function renderInDecline() {
+  const d = inState.data, dec = d.decline;
+  const dim = inState.declineDim;
+  document.querySelectorAll("#inDeclineTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.dim === dim));
+  const w = dec.window;
+  document.getElementById("inDeclineIntro").textContent = dec.available
+    ? `The last 28 days (${fmtShortDate(w.last_from)} – ${fmtShortDate(w.last_to)}) against the 28 before (${fmtShortDate(w.prior_from)} – ${fmtShortDate(w.prior_to)}). Each cell reads “before → now”.`
+    : "Needs at least 56 days of history to compare two 28-day windows.";
+  const rows = (dec.tabs && dec.tabs[dim]) || [];
+  const cell = (s) => `${fmtInt(s.prior)} → ${fmtInt(s.last)}${s.change === null ? "" : ` <span class="rng">${s.change >= 0 ? "+" : ""}${s.change.toFixed(0)}%</span>`}`;
+  document.getElementById("inDeclineHead").innerHTML =
+    `<tr><th class="left">${{ consultant: "Sales consultant", model: "Model", source: "Source" }[dim]}</th><th>Status</th><th>Enquiries</th><th>Test drives</th><th>New bookings</th><th>Retails</th><th>Overall</th></tr>`;
+  document.getElementById("inDeclineBody").innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.label)}${r.low_volume ? ` <span class="muted-sm">(few cases)</span>` : ""}</td>
+    <td>${badge(IN_STATUS[r.status][0], IN_STATUS[r.status][1])}</td><td>${cell(r.stages.enquiries)}</td><td>${cell(r.stages.test_drives)}</td>
+    <td>${cell(r.stages.bookings)}</td><td>${cell(r.stages.retails)}</td>
+    <td><span class="${r.momentum >= 0 ? "up-good" : "down-bad"}">${r.momentum >= 0 ? "+" : ""}${r.momentum.toFixed(0)}%</span></td></tr>`).join("")
+    : `<tr><td colspan="7" class="empty-cell">No data.</td></tr>`;
+  const tone = { declining: cssVar("--red"), inactive: cssVar("--red"), watch: cssVar("--amber"), stable: "#9aa3b8", improving: cssVar("--green"), new: cssVar("--blue") };
+  const shown = rows.slice().sort((a, b) => a.momentum - b.momentum).slice(0, 14);
+  hBarColoured("inDeclineChart", shown.map(r => r.label), shown.map(r => r.momentum), shown.map(r => tone[r.status]), (v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(0)}%`);
+  document.getElementById("inDeclineNote").textContent = d.decline_note;
+}
+
+function renderInConv() {
+  const d = inState.data, c = d.conversion;
+  document.getElementById("inConvTitle").textContent = `Conversion forecast · ${c.month_label}`;
+  document.getElementById("inConvIntro").textContent =
+    "Flow-based, like the Comparison page: the month's bookings (or test drives, retails) divided by the same month's enquiries. Booking → Retail is retails ÷ total bookings.";
+  document.getElementById("inConvOverallHead").innerHTML = `<tr><th class="left">Step</th><th>Last 28 days</th><th>Forecast</th><th>80% range</th></tr>`;
+  document.getElementById("inConvOverallBody").innerHTML = ["E2T", "E2B", "E2R", "B2R"].map(k => `<tr><td>${c.labels[k]}</td><td>${fmtPct(c.now[k])}</td>
+    <td><span class="big">${fmtPct(c.overall[k].mid)}</span></td><td>${fmtPct(c.overall[k].low)} – ${fmtPct(c.overall[k].high)}</td></tr>`).join("");
+  const dim = inState.convDim;
+  document.querySelectorAll("#inConvTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.dim === dim));
+  const rows = (c.tabs && c.tabs[dim]) || [];
+  document.getElementById("inConvHead").innerHTML =
+    `<tr><th class="left">${dim === "consultant" ? "Sales consultant" : "Model"}</th><th>Enquiries (56 days)</th><th>Enquiry → Test drive</th><th>Enquiry → Booking</th><th>Enquiry → Retail</th><th>Booking → Retail</th></tr>`;
+  document.getElementById("inConvBody").innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.label)}${r.small ? ` <span class="muted-sm">(few cases)</span>` : ""}</td>
+    <td>${fmtInt(r.enquiries)}</td><td>${pctCell(r.E2T)}</td><td>${pctCell(r.E2B)}</td><td>${pctCell(r.E2R)}</td><td>${pctCell(r.B2R)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty-cell">No data.</td></tr>`;
+  const shown = rows.filter(r => !r.small).slice().sort((a, b) => b.E2B.mid - a.E2B.mid).slice(0, 14);
+  hBarColoured("inConvChart", shown.map(r => r.label), shown.map(r => r.E2B.mid), shown.map(() => cssVar("--green")), (v) => `${Number(v).toFixed(1)}%`);
+  document.getElementById("inConvNote").textContent =
+    "Chart: forecast enquiry → booking rate. Each group's rate blends its own recent record (last 28 days at full weight, the 28 before at half) with the overall rate, so a group with few enquiries is pulled towards the average. Ranges are wider for small groups.";
+}
+
+function renderInProd() {
+  const d = inState.data, p = d.productivity;
+  document.getElementById("inProdIntro").textContent =
+    "Output per 28 active days, so people who joined late are not penalised. Index 100 = the team average: each consultant's output against the team's, weighted retails 35 / bookings 30 / enquiries 25 / test drives 10.";
+  document.getElementById("inProdHead").innerHTML =
+    `<tr><th>#</th><th class="left">Sales consultant</th><th>Active days</th><th>Enquiries / 28d</th><th>Test drives / 28d</th><th>Bookings / 28d</th><th>Retails / 28d</th><th>Enquiry → booking</th><th>vs team</th><th>Index</th><th>Band</th></tr>`;
+  const band = { "above team": "green", "in line": "grey", "below team": "amber", "low volume": "blue" };
+  document.getElementById("inProdBody").innerHTML = p.rows.length ? p.rows.map(r => `<tr><td>${r.rank}</td><td class="left">${esc(r.label)}</td><td>${fmtInt(r.active_days)}</td>
+    <td>${r.per28_enquiries.toFixed(1)}</td><td>${r.per28_test_drives.toFixed(1)}</td><td>${r.per28_bookings.toFixed(1)}</td><td>${r.per28_retails.toFixed(1)}</td>
+    <td>${r.e2b === null ? "—" : fmtPct(r.e2b)}</td>
+    <td>${r.vs_team_e2b === null ? "—" : `<span class="${r.vs_team_e2b >= 0 ? "up-good" : "down-bad"}">${r.vs_team_e2b >= 0 ? "+" : ""}${r.vs_team_e2b.toFixed(1)} pts</span>`}</td>
+    <td><span class="big">${fmtInt(r.index)}</span></td><td>${badge(r.band, band[r.band])}</td></tr>`).join("")
+    : `<tr><td colspan="11" class="empty-cell">No data.</td></tr>`;
+  const tone = { "above team": cssVar("--green"), "in line": "#9aa3b8", "below team": cssVar("--amber"), "low volume": cssVar("--blue") };
+  const shown = p.rows.slice(0, 16);
+  hBarColoured("inProdChart", shown.map(r => r.label), shown.map(r => r.index), shown.map(r => tone[r.band]), (v) => fmtInt(v));
+  document.getElementById("inProdNote").textContent = p.team && p.team.enquiries !== undefined
+    ? `Team average per 28 days: ${p.team.enquiries} enquiries, ${p.team.test_drives} test drives, ${p.team.bookings} new bookings, ${p.team.retails} retails. Team enquiry → booking: ${p.team_conv.e2b}%. Consultants with fewer than 30 enquiries are marked “low volume” and not ranked as above or below team.`
+    : "";
+}
+
+function initInsights() {
+  document.getElementById("inObsTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn"); if (!b) return;
+    inState.kind = b.dataset.kind; renderInObs();
+  });
+  document.getElementById("inTrackTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn"); if (!b) return;
+    inState.series = b.dataset.series; renderInTrack();
+  });
+  document.getElementById("inDeclineTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn"); if (!b) return;
+    inState.declineDim = b.dataset.dim; renderInDecline();
+  });
+  document.getElementById("inConvTabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab-btn"); if (!b) return;
+    inState.convDim = b.dataset.dim; renderInConv();
+  });
+}
+
 
 async function boot() {
   const authResponse = await fetch('/api/auth/me');
@@ -3571,6 +4120,10 @@ async function boot() {
       if (cached) renderBreakdownTable(prefix, section, cached, btn.dataset.dim);
     });
   });
+
+  initCancellations();
+  initForecast();
+  initInsights();
 
   await loadMeta();
   await showSection(state.user.pages[0]);

@@ -37,11 +37,14 @@
       <button class="nav-link" data-section="testdrive">Test Drive</button>
       <button class="nav-link" data-section="booking">Booking</button>
       <button class="nav-link" data-section="sales">Retails</button>
+      <button class="nav-link" data-section="cancellations">Booking Cancellations</button>
       <button class="nav-link" data-section="exchange">Exchange</button>
       <button class="nav-link" data-section="pincode">PIN Code</button>
       <button class="nav-link" data-section="inventory">Vehicle Stock</button>
       <button class="nav-link" data-section="stock">Enquiry Wise Stock</button>
       <button class="nav-link" data-section="comparison">Month Comparison</button>
+      <button class="nav-link" data-section="forecast">Forecast (ML)</button>
+      <button class="nav-link" data-section="insights">Management Insights</button>
     </nav>
 
     <div class="sidebar-footer">
@@ -945,6 +948,246 @@
             <thead id="exBreakdownHead"></thead>
             <tbody id="exBreakdownBody"></tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- BOOKING CANCELLATIONS ---------- -->
+    <section class="view" id="view-cancellations">
+      <div class="panel filter-panel">
+        <div class="filter-bar">
+          <div class="filter-field">
+            <label for="cnMonth">Month</label>
+            <select id="cnMonth" class="filter-select"></select>
+          </div>
+          <div class="filter-field">
+            <label for="cnModel">Model</label>
+            <select id="cnModel" class="filter-select"><option value="all">All models</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cnConsultant">Consultant</label>
+            <select id="cnConsultant" class="filter-select"><option value="all">All consultants</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cnSource">Source</label>
+            <select id="cnSource" class="filter-select"><option value="all">All sources</option></select>
+          </div>
+          <div class="filter-field">
+            <label for="cnSubSource">Sub-source</label>
+            <select id="cnSubSource" class="filter-select"><option value="all">All sub-sources</option></select>
+          </div>
+          <button id="cnReset" class="ghost-btn light-ghost">Reset filters</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>Booking cancellations</h3><p id="cnBasisNote"></p></div>
+        <div class="tab-row" id="cnBasisTabs" style="margin-bottom:0">
+          <button class="tab-btn active" data-basis="cancel">By cancel date</button>
+          <button class="tab-btn" data-basis="booking">By booking date</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" id="cnKpiGrid"></div>
+
+      <div class="panel-grid two-col">
+        <div class="panel">
+          <div class="panel-head"><h3 id="cnMonthTitle">Cancellations by month</h3><p>Every month; the Month filter does not apply to this chart.</p></div>
+          <div class="chart-box"><canvas id="cnMonthChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Why bookings were cancelled</h3><p>Cancel reason, within the current filters.</p></div>
+          <div class="chart-box"><canvas id="cnReasonChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 id="cnTableTitle">By sales consultant</h3><p>Click a row to list that row's cancelled bookings below.</p></div>
+        <div class="tab-row" id="cnDimTabs">
+          <button class="tab-btn active" data-dim="consultant">Consultant</button>
+          <button class="tab-btn" data-dim="model">Model</button>
+          <button class="tab-btn" data-dim="variant">Variant</button>
+          <button class="tab-btn" data-dim="color">Colour</button>
+          <button class="tab-btn" data-dim="source">Source</button>
+          <button class="tab-btn" data-dim="reason">Reason</button>
+        </div>
+        <div class="table-wrap">
+          <table class="comparison-table" id="cnTable">
+            <thead id="cnTableHead"></thead>
+            <tbody id="cnTableBody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="cnRecon"></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head row-head">
+          <div><h3 id="cnListTitle">Cancelled bookings</h3><p id="cnListNote"></p></div>
+          <div class="head-tools">
+            <button class="ghost-btn light-ghost" id="cnClear" type="button" hidden>Show all</button>
+            <input type="search" class="filter-select search-box" id="cnSearch" placeholder="Search name, mobile, consultant, reason, remark">
+            <a class="ghost-btn light-ghost" id="cnExport" href="#">Export CSV</a>
+          </div>
+        </div>
+        <div class="table-wrap tall">
+          <table class="comparison-table" id="cnList">
+            <thead><tr>
+              <th>Cancel date</th><th>Booking date</th><th>Days</th><th>Customer</th><th>Mobile</th><th>Consultant</th><th>Model</th>
+              <th>Variant</th><th>Colour</th><th>Source</th><th>Reason</th><th>Lost remark</th><th>Consultant remarks</th>
+            </tr></thead>
+            <tbody id="cnListBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FORECAST (ML) ---------- -->
+    <section class="view" id="view-forecast">
+      <div class="panel" id="fcEmpty" hidden>
+        <div class="panel-head"><h3>Forecast not available yet</h3><p id="fcEmptyMsg"></p></div>
+      </div>
+      <div id="fcBody">
+        <div class="panel">
+          <div class="panel-head row-head">
+            <div><h3>Where the coming months are heading</h3><p id="fcIntro"></p></div>
+            <span class="fc-badge" id="fcBadge"></span>
+          </div>
+          <div class="fc-ahead">
+            <span class="fc-ahead-label">Forecast ahead</span>
+            <div class="tab-row" id="fcAheadTabs" style="margin-bottom:0; border-bottom:none">
+              <button class="tab-btn" data-ahead="1">1 month</button>
+              <button class="tab-btn" data-ahead="2">2 months</button>
+              <button class="tab-btn active" data-ahead="3">3 months</button>
+            </div>
+          </div>
+          <div id="fcNotes"></div>
+        </div>
+
+        <div class="kpi-grid" id="fcKpiGrid"></div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Month by month</h3><p>Expected value, with the low and high case (an 80% range) underneath. The current month adds what is left of it to what has already happened.</p></div>
+          <div class="table-wrap">
+            <table class="comparison-table" id="fcMonthTable"><thead id="fcMonthHead"></thead><tbody id="fcMonthBody"></tbody></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3 id="fcChartTitle">Forecast</h3><p>Solid = what happened, dashed = forecast, shaded = the 80% range.</p></div>
+          <div class="tab-row" id="fcSeriesTabs">
+            <button class="tab-btn active" data-series="enquiries">Enquiries</button>
+            <button class="tab-btn" data-series="test_drives">Test drives</button>
+            <button class="tab-btn" data-series="bookings">Total bookings</button>
+            <button class="tab-btn" data-series="retails">Retails</button>
+          </div>
+          <div class="panel-grid two-col" style="margin-bottom:0">
+            <div><div class="fc-sub" id="fcCumTitle">This month, running total</div><div class="chart-box"><canvas id="fcCumChart"></canvas></div></div>
+            <div><div class="fc-sub">Week by week</div><div class="chart-box"><canvas id="fcWeekChart"></canvas></div></div>
+          </div>
+          <div style="margin-top:20px"><div class="fc-sub">Month by month: actual and forecast</div><div class="chart-box"><canvas id="fcMonthChart"></canvas></div></div>
+          <p class="hint" id="fcChartNote"></p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Model-wise projection</h3><p id="fcModelNote"></p></div>
+          <div class="tab-row" id="fcModelTabs"></div>
+          <div class="table-wrap">
+            <table class="comparison-table" id="fcModelTable"><thead id="fcModelHead"></thead><tbody id="fcModelBody"></tbody></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Open bookings → expected retails</h3><p id="fcOpenNote"></p></div>
+          <div class="kpi-grid" id="fcOpenKpis"></div>
+          <div class="table-wrap">
+            <table class="comparison-table" id="fcOpenTable"><thead id="fcOpenHead"></thead><tbody id="fcOpenBody"></tbody></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>How reliable is this?</h3><p>Each model was tested by forecasting 14 days it had not seen, again and again; "typical miss" is how far its 14-day total was from the truth.</p></div>
+          <div class="table-wrap">
+            <table class="comparison-table" id="fcBackTable"><thead id="fcBackHead"></thead><tbody id="fcBackBody"></tbody></table>
+          </div>
+          <ul class="fc-method" id="fcMethod"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- MANAGEMENT INSIGHTS ---------- -->
+    <section class="view" id="view-insights">
+      <div class="panel" id="inEmpty" hidden>
+        <div class="panel-head"><h3>Management Insights not available yet</h3><p id="inEmptyMsg"></p></div>
+      </div>
+      <div id="inBody">
+        <div class="panel">
+          <div class="panel-head row-head">
+            <div><h3>What the numbers say</h3><p id="inIntro"></p></div>
+            <span class="fc-badge" id="inBadge"></span>
+          </div>
+          <div id="inNotes"></div>
+        </div>
+
+        <div class="kpi-grid" id="inKpiGrid"></div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>What management should know</h3><p>Written automatically from the numbers further down this page. Each point shows its evidence and a suggested next step.</p></div>
+          <div class="tab-row" id="inObsTabs">
+            <button class="tab-btn active" data-kind="all">All</button>
+            <button class="tab-btn" data-kind="risk">Needs action</button>
+            <button class="tab-btn" data-kind="watch">Watch</button>
+            <button class="tab-btn" data-kind="good">Good news</button>
+            <button class="tab-btn" data-kind="data">Data &amp; forecast</button>
+          </div>
+          <div class="obs-list" id="inObs"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Actual against the machine-learning forecast</h3><p id="inTrackIntro"></p></div>
+          <div class="kpi-grid" id="inTrackKpis"></div>
+          <div class="tab-row" id="inTrackTabs">
+            <button class="tab-btn active" data-series="enquiries">Enquiries</button>
+            <button class="tab-btn" data-series="test_drives">Test drives</button>
+            <button class="tab-btn" data-series="bookings">New bookings made</button>
+            <button class="tab-btn" data-series="retails">Retails</button>
+          </div>
+          <div class="panel-grid two-col" style="margin-bottom:0">
+            <div><div class="fc-sub">Week by week: what happened and what the model would have forecast</div><div class="chart-box"><canvas id="inTrackChart"></canvas></div></div>
+            <div><div class="fc-sub">The forecast made on the 1st of the month, against what happened since</div>
+              <div class="table-wrap"><table class="comparison-table" id="inTrackMonthTable"><thead id="inTrackMonthHead"></thead><tbody id="inTrackMonthBody"></tbody></table></div>
+              <p class="hint" id="inTrackNote"></p></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Who is declining</h3><p id="inDeclineIntro"></p></div>
+          <div class="tab-row" id="inDeclineTabs">
+            <button class="tab-btn active" data-dim="consultant">Sales consultants</button>
+            <button class="tab-btn" data-dim="model">Models</button>
+            <button class="tab-btn" data-dim="source">Sources</button>
+          </div>
+          <div class="table-wrap"><table class="comparison-table" id="inDeclineTable"><thead id="inDeclineHead"></thead><tbody id="inDeclineBody"></tbody></table></div>
+          <div class="chart-box tall-chart"><canvas id="inDeclineChart"></canvas></div>
+          <p class="hint" id="inDeclineNote"></p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3 id="inConvTitle">Conversion forecast</h3><p id="inConvIntro"></p></div>
+          <div class="table-wrap"><table class="comparison-table" id="inConvOverall"><thead id="inConvOverallHead"></thead><tbody id="inConvOverallBody"></tbody></table></div>
+          <div class="tab-row" id="inConvTabs" style="margin-top:18px">
+            <button class="tab-btn active" data-dim="consultant">By sales consultant</button>
+            <button class="tab-btn" data-dim="model">By model</button>
+          </div>
+          <div class="table-wrap"><table class="comparison-table" id="inConvTable"><thead id="inConvHead"></thead><tbody id="inConvBody"></tbody></table></div>
+          <div class="chart-box tall-chart"><canvas id="inConvChart"></canvas></div>
+          <p class="hint" id="inConvNote"></p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>Sales consultant productivity</h3><p id="inProdIntro"></p></div>
+          <div class="table-wrap"><table class="comparison-table" id="inProdTable"><thead id="inProdHead"></thead><tbody id="inProdBody"></tbody></table></div>
+          <div class="chart-box tall-chart"><canvas id="inProdChart"></canvas></div>
+          <p class="hint" id="inProdNote"></p>
         </div>
       </div>
     </section>
