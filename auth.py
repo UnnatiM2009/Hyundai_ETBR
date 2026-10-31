@@ -11,7 +11,8 @@ import team_scope
 
 LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange', 'pincode']
 # 'daily' (Daily report) is deliberately NOT in LIMITED_PAGES: Full-access designations only.
-FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'inventory', 'stock', 'comparison']
+# 'cancellations', 'forecast' and 'insights' are management screens: Full access only.
+FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'cancellations', 'inventory', 'stock', 'comparison', 'forecast', 'insights']
 DATA_FILE = Path(os.environ.get('AUTH_DATA_FILE', str(Path(__file__).parent / 'data' / 'Data.xlsx')))
 SESSIONS = {}
 FAILURES = defaultdict(list)

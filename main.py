@@ -27,6 +27,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import data_processor as dp
 import daily_report
 import pin_report
+import cancellations
+import forecast
+import insights
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -86,6 +89,48 @@ def api_comparison(
     mtd: bool = Query(default=False),
 ):
     return dp.compute_comparison(period=month, model=model, consultant=consultant, source=source, mtd=mtd, sub_source=sub_source)
+
+
+# --------------------------------------------------------------------------- #
+# Booking Cancellations / Forecast (ML) / Management Insights  (Full-access screens only:
+# auth.py's Limited allow-list does not include these paths, so Limited users get 403)
+# --------------------------------------------------------------------------- #
+@app.get("/api/cancellations")
+def api_cancellations(
+    period: Optional[str] = Query(default="current_month"),
+    basis: str = Query(default="cancel", description="cancel = by cancel date, booking = by booking date"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+    dim: str = Query(default="consultant"),
+):
+    return cancellations.compute_cancellations(_period_param(period), basis, model, consultant, source, sub_source, dim)
+
+
+@app.get("/api/cancellations/export")
+def api_cancellations_export(
+    period: Optional[str] = Query(default="current_month"),
+    basis: str = Query(default="cancel"),
+    model: Optional[str] = Query(default=None),
+    consultant: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sub_source: Optional[str] = Query(default=None),
+):
+    text = cancellations.export_csv(_period_param(period), basis, model, consultant, source, sub_source)
+    name = f"booking_cancellations_{period or 'all'}_{'booking' if basis == 'booking' else 'cancel'}_date.csv"
+    return Response(content=text.encode("utf-8"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/forecast")
+def api_forecast(ahead: int = Query(default=3, ge=1, le=3, description="months ahead after the current month")):
+    return forecast.compute_forecast(ahead)
+
+
+@app.get("/api/insights")
+def api_insights():
+    return insights.compute_insights()
 
 
 @app.get("/api/breakdown")
