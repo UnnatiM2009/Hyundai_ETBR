@@ -1,7 +1,7 @@
 # Unnati Hyundai — Screen access only
 
 Full users have all existing dashboard screens and management actions.
-Limited users have Enquiry, Enquiry Follow-up, Test Drive, Booking, Retails and Exchange. Other screens (including the Daily Report) and management APIs are blocked server-side. A Limited user whose Designation is **Team Leader** sees ONLY their own team's data on those six screens (see "Team Leaders" below); Limited users with any other designation still see every consultant.
+Limited users have Enquiry, Enquiry Follow-up, Test Drive, Booking, Retails, Exchange, PIN Code and Enquiry Wise Stock. Other screens (including the Daily Report) and management APIs are blocked server-side. A Limited user whose Designation is **Team Leader** sees ONLY their own team's data on those six screens (see "Team Leaders" below); Limited users with any other designation still see every consultant.
 
 The included data/Data.xlsx retains the accounts supplied in your uploaded workbook. Column E is Designation. Access is controlled by the Full/Limited value in column C; Designation only matters for the Team Leader rule below.
 

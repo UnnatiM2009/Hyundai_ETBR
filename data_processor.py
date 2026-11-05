@@ -1264,21 +1264,24 @@ def compute_model_variant_records(model: str, period: Optional[str], consultant:
             "bd": df["Booking Date"].dt.strftime("%Y-%m-%d").fillna("").values,
             # 1 = status Booked (still pending delivery), 0 = already Retailed. Booked rows now include retail.
             "p": df["is_booked"].astype(int).values,
+            # Source of the enquiry - feeds the consultant window's Source details table (appended last)
+            "s": df["Source"].map(_text).replace("", "Not captured").values,
+            "ss": df["Sub-source"].map(_text).replace("", "Not captured").values,
         }))
 
     empty = {"enq": [], "book": [], "retail": []}
-    vocab = {"variants": [], "models": [], "fuels": []}
+    vocab = {"variants": [], "models": [], "fuels": [], "sources": [], "subsources": []}
     if parts:
         allr = pd.concat(parts, ignore_index=True)
         codes = {}
-        for col, name in (("v", "variants"), ("m", "models"), ("f", "fuels")):
+        for col, name in (("v", "variants"), ("m", "models"), ("f", "fuels"), ("s", "sources"), ("ss", "subsources")):
             c, uniq = pd.factorize(allr[col])
             codes[col] = c
             vocab[name] = [str(u) for u in uniq]
-        allr["v"], allr["m"], allr["f"] = codes["v"], codes["m"], codes["f"]
+        allr["v"], allr["m"], allr["f"], allr["s"], allr["ss"] = codes["v"], codes["m"], codes["f"], codes["s"], codes["ss"]
         for kind, key in (("enquiry", "enq"), ("booked", "book"), ("retail", "retail")):
             sub = allr[allr["k"] == kind]
-            cols = ["v", "m", "f", "a"] + (["t", "l"] if kind == "enquiry" else (["c", "col", "cn", "bd", "p"] if kind == "booked" else []))
+            cols = ["v", "m", "f", "a"] + (["t", "l"] if kind == "enquiry" else (["c", "col", "cn", "bd", "p"] if kind == "booked" else [])) + ["s", "ss"]
             empty[key] = sub[cols].values.tolist()
 
     return {

@@ -9,10 +9,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import team_scope
 
-LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange', 'pincode']
+LIMITED_PAGES = ['enquiry', 'followup', 'testdrive', 'booking', 'sales', 'exchange', 'pincode', 'stock']
 # 'daily' (Daily report) is deliberately NOT in LIMITED_PAGES: Full-access designations only.
 # 'cancellations', 'forecast' and 'insights' are management screens: Full access only.
-FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'cancellations', 'inventory', 'stock', 'comparison', 'forecast', 'insights']
+FULL_PAGES = ['overview', 'daily', *LIMITED_PAGES, 'cancellations', 'inventory', 'comparison', 'forecast', 'insights']
 DATA_FILE = Path(os.environ.get('AUTH_DATA_FILE', str(Path(__file__).parent / 'data' / 'Data.xlsx')))
 SESSIONS = {}
 FAILURES = defaultdict(list)
@@ -147,7 +147,9 @@ class AccessMiddleware(BaseHTTPMiddleware):
         if user['access']=='limited' and path.startswith('/api/'):
             allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/enquiry','/api/test-drive',
                        '/api/booking','/api/sales','/api/exchange','/api/pincode','/api/pincode/records','/api/followup','/api/followup/list',
-                       '/api/followup/booked','/api/breakdown','/api/comparison'}
+                       '/api/followup/booked','/api/breakdown','/api/comparison',
+                       # Enquiry Wise Stock page (its list, its Export button and its stock-unit pop-up)
+                       '/api/enquiry-stock','/api/enquiry-stock/export','/api/vehicle-stock/units'}
             if request.method != 'GET' or path not in allowed or (path=='/api/breakdown' and request.query_params.get('section') not in LIMITED_PAGES):
                 return JSONResponse({'detail':'This screen is not available for Limited access.'}, status_code=403)
         # Team Leaders: every calculation for this request only sees their own team's enquiries.
