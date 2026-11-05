@@ -995,6 +995,30 @@ function mvCompute() {
   });
   list.sort((a, b) => (b.enquiries - a.enquiries) || (b.bookings - a.bookings) || (b.retail - a.retail));
 
+  // ---- source rows: each Source with its Sub-sources underneath (same rows, counted the same way as the variants) ----
+  // row layout (last two cells): enquiry [..,t,l,s,ss]  booked [..,c,col,cn,bd,p,s,ss]  retail [..,s,ss]
+  const srcMap = new Map();
+  const blankSrc = () => ({ enq: 0, td: 0, book: 0, bookRetailed: 0, retail: 0 });
+  const sget = (si, ssi) => {
+    let o = srcMap.get(si);
+    if (!o) { o = Object.assign(blankSrc(), { subs: new Map() }); srcMap.set(si, o); }
+    let c = o.subs.get(ssi);
+    if (!c) { c = blankSrc(); o.subs.set(ssi, c); }
+    return [o, c];
+  };
+  enq.forEach(r => { sget(r[6], r[7]).forEach(o => { o.enq++; o.td += r[4]; }); });
+  book.forEach(r => { sget(r[9], r[10]).forEach(o => { o.book++; if (!r[8]) o.bookRetailed++; }); });
+  retail.forEach(r => { sget(r[4], r[5]).forEach(o => { o.retail++; }); });
+  const SV = V.sources || [], SSV = V.subsources || [];
+  const srcRow = (o, name) => ({
+    name, enquiries: o.enq, test_drives: o.td, bookings: o.book, retail: o.retail,
+    e2t: pct(o.td, o.enq), e2b: pct(o.book, o.enq), e2r: pct(o.retail, o.enq), b2r: pct(o.bookRetailed, o.book),
+  });
+  const byVolume = (a, b) => (b.enquiries - a.enquiries) || (b.bookings - a.bookings) || (b.retail - a.retail);
+  const sources = Array.from(srcMap.entries()).map(([si, o]) => Object.assign(srcRow(o, SV[si] || "Not captured"), {
+    subs: Array.from(o.subs.entries()).map(([ssi, c]) => srcRow(c, SSV[ssi] || "Not captured")).sort(byVolume),
+  })).sort(byVolume);
+
   // ---- KPI cards ----
   const e = enq.length, td = enq.reduce((a, r) => a + r[4], 0), lost = enq.reduce((a, r) => a + r[5], 0);
   const b = book.length, rt = retail.length;
@@ -1040,7 +1064,7 @@ function mvCompute() {
       e2b: pct(b, e), e2r: pct(rt, e), b2r: pct(b - pend, b), variant_count: list.length,
       top_variant: list.length ? list[0].variant : "",
     },
-    variants: list, variant_chart, ageing,
+    variants: list, sources, variant_chart, ageing,
   };
 }
 
@@ -1090,6 +1114,7 @@ function renderModelWindow(d) {
   renderMvVariantChart(d);
   renderMvAgeChart(d);
   renderMvTable(d);
+  renderMvSources(d);
   renderMvWait(d);
 
   const note = mvEl("mvFilterNote");
@@ -1340,6 +1365,33 @@ function renderMvTable(d) {
                 e2t: k.test_drive_rate, e2b: k.e2b, e2r: k.e2r, b2r: k.b2r };
   mvEl("mvTableFoot").innerHTML =
     `<tr><td>Total</td>${showModel ? "<td></td>" : ""}<td></td>${MV_COLS.map(c => `<td>${c.fmt(tot[c.key])}</td>`).join("")}</tr>`;
+}
+
+/* Source details: the consultant window's enquiries / test drives / bookings / retails split by Source,
+   with each Source's Sub-sources listed underneath it. */
+function renderMvSources(d) {
+  const card = mvEl("mvSrcCard");
+  if (!card) return;
+  card.hidden = mvState.dim !== "consultant";
+  if (card.hidden) return;
+  const rows = d.sources || [];
+  const subCount = rows.reduce((a, r) => a + r.subs.length, 0);
+  mvEl("mvSrcCount").textContent = `(${rows.length} source${rows.length === 1 ? "" : "s"} · ${subCount} sub-source${subCount === 1 ? "" : "s"})`;
+  mvEl("mvSrcHead").innerHTML = `<tr><th>Source / Sub-source</th>${MV_COLS.map(c => `<th>${c.label}</th>`).join("")}</tr>`;
+  if (!rows.length) {
+    mvEl("mvSrcBody").innerHTML = `<tr><td colspan="${MV_COLS.length + 1}" class="empty-cell">No sources for this selection.</td></tr>`;
+    mvEl("mvSrcFoot").innerHTML = "";
+    return;
+  }
+  const cells = (r) => MV_COLS.map(c => `<td>${c.fmt(r[c.key])}</td>`).join("");
+  mvEl("mvSrcBody").innerHTML = rows.map((r, i) => `
+    <tr><td><strong>${esc(r.name)}</strong></td>${cells(r)}</tr>` +
+    r.subs.map(s => `
+    <tr class="inv-sub-row" data-parent-idx="${i}"><td>&nbsp;&nbsp;&nbsp;&#8627; ${esc(s.name)}</td>${cells(s)}</tr>`).join("")).join("");
+  const k = d.kpis;
+  const tot = { enquiries: k.enquiries, test_drives: k.test_drives, bookings: k.bookings, retail: k.retail,
+                e2t: k.test_drive_rate, e2b: k.e2b, e2r: k.e2r, b2r: k.b2r };
+  mvEl("mvSrcFoot").innerHTML = `<tr><td>Total</td>${MV_COLS.map(c => `<td>${c.fmt(tot[c.key])}</td>`).join("")}</tr>`;
 }
 
 function renderMvWait(d) {
@@ -3412,7 +3464,9 @@ function showScopeNote(scope) {
 /* ====================================================================== */
 const rangeCell = (mid, low, high, fmt = fmtInt) =>
   `<span class="big">${fmt(mid)}</span><span class="rng">${fmt(low)} – ${fmt(high)}</span>`;
+const fmtPct0 = (n) => `${Math.round(n ?? 0)}%`;                      // whole-number percentage (Insights tables)
 const pctCell = (r) => (r ? rangeCell(r.mid, r.low, r.high, fmtPct) : "—");
+const pctCell0 = (r) => (r ? rangeCell(r.mid, r.low, r.high, fmtPct0) : "—");
 const shortMonth = (iso) => fmtShortDate(iso);
 const SERIES_COLORS = () => ({
   enquiries: cssVar("--blue"), test_drives: cssVar("--amber"), bookings: cssVar("--green"), retails: cssVar("--purple"),
@@ -3892,18 +3946,18 @@ function renderInConv() {
   document.getElementById("inConvIntro").textContent =
     "Flow-based, like the Comparison page: the month's bookings (or test drives, retails) divided by the same month's enquiries. Booking → Retail is retails ÷ total bookings.";
   document.getElementById("inConvOverallHead").innerHTML = `<tr><th class="left">Step</th><th>Last 28 days</th><th>Forecast</th><th>80% range</th></tr>`;
-  document.getElementById("inConvOverallBody").innerHTML = ["E2T", "E2B", "E2R", "B2R"].map(k => `<tr><td>${c.labels[k]}</td><td>${fmtPct(c.now[k])}</td>
-    <td><span class="big">${fmtPct(c.overall[k].mid)}</span></td><td>${fmtPct(c.overall[k].low)} – ${fmtPct(c.overall[k].high)}</td></tr>`).join("");
+  document.getElementById("inConvOverallBody").innerHTML = ["E2T", "E2B", "E2R", "B2R"].map(k => `<tr><td>${c.labels[k]}</td><td>${fmtPct0(c.now[k])}</td>
+    <td><span class="big">${fmtPct0(c.overall[k].mid)}</span></td><td>${fmtPct0(c.overall[k].low)} – ${fmtPct0(c.overall[k].high)}</td></tr>`).join("");
   const dim = inState.convDim;
   document.querySelectorAll("#inConvTabs .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.dim === dim));
   const rows = (c.tabs && c.tabs[dim]) || [];
   document.getElementById("inConvHead").innerHTML =
     `<tr><th class="left">${dim === "consultant" ? "Sales consultant" : "Model"}</th><th>Enquiries (56 days)</th><th>Enquiry → Test drive</th><th>Enquiry → Booking</th><th>Enquiry → Retail</th><th>Booking → Retail</th></tr>`;
   document.getElementById("inConvBody").innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.label)}${r.small ? ` <span class="muted-sm">(few cases)</span>` : ""}</td>
-    <td>${fmtInt(r.enquiries)}</td><td>${pctCell(r.E2T)}</td><td>${pctCell(r.E2B)}</td><td>${pctCell(r.E2R)}</td><td>${pctCell(r.B2R)}</td></tr>`).join("")
+    <td>${fmtInt(r.enquiries)}</td><td>${pctCell0(r.E2T)}</td><td>${pctCell0(r.E2B)}</td><td>${pctCell0(r.E2R)}</td><td>${pctCell0(r.B2R)}</td></tr>`).join("")
     : `<tr><td colspan="6" class="empty-cell">No data.</td></tr>`;
   const shown = rows.filter(r => !r.small).slice().sort((a, b) => b.E2B.mid - a.E2B.mid).slice(0, 14);
-  hBarColoured("inConvChart", shown.map(r => r.label), shown.map(r => r.E2B.mid), shown.map(() => cssVar("--green")), (v) => `${Number(v).toFixed(1)}%`);
+  hBarColoured("inConvChart", shown.map(r => r.label), shown.map(r => r.E2B.mid), shown.map(() => cssVar("--green")), (v) => `${Math.round(Number(v))}%`);
   document.getElementById("inConvNote").textContent =
     "Chart: forecast enquiry → booking rate. Each group's rate blends its own recent record (last 28 days at full weight, the 28 before at half) with the overall rate, so a group with few enquiries is pulled towards the average. Ranges are wider for small groups.";
 }
@@ -3916,16 +3970,16 @@ function renderInProd() {
     `<tr><th>#</th><th class="left">Sales consultant</th><th>Active days</th><th>Enquiries / 28d</th><th>Test drives / 28d</th><th>Bookings / 28d</th><th>Retails / 28d</th><th>Enquiry → booking</th><th>vs team</th><th>Index</th><th>Band</th></tr>`;
   const band = { "above team": "green", "in line": "grey", "below team": "amber", "low volume": "blue" };
   document.getElementById("inProdBody").innerHTML = p.rows.length ? p.rows.map(r => `<tr><td>${r.rank}</td><td class="left">${esc(r.label)}</td><td>${fmtInt(r.active_days)}</td>
-    <td>${r.per28_enquiries.toFixed(1)}</td><td>${r.per28_test_drives.toFixed(1)}</td><td>${r.per28_bookings.toFixed(1)}</td><td>${r.per28_retails.toFixed(1)}</td>
-    <td>${r.e2b === null ? "—" : fmtPct(r.e2b)}</td>
-    <td>${r.vs_team_e2b === null ? "—" : `<span class="${r.vs_team_e2b >= 0 ? "up-good" : "down-bad"}">${r.vs_team_e2b >= 0 ? "+" : ""}${r.vs_team_e2b.toFixed(1)} pts</span>`}</td>
+    <td>${fmtInt(r.per28_enquiries)}</td><td>${fmtInt(r.per28_test_drives)}</td><td>${fmtInt(r.per28_bookings)}</td><td>${fmtInt(r.per28_retails)}</td>
+    <td>${r.e2b === null ? "—" : fmtPct0(r.e2b)}</td>
+    <td>${r.vs_team_e2b === null ? "—" : `<span class="${Math.round(r.vs_team_e2b) >= 0 ? "up-good" : "down-bad"}">${Math.round(r.vs_team_e2b) >= 0 ? "+" : ""}${Math.round(r.vs_team_e2b)} pts</span>`}</td>
     <td><span class="big">${fmtInt(r.index)}</span></td><td>${badge(r.band, band[r.band])}</td></tr>`).join("")
     : `<tr><td colspan="11" class="empty-cell">No data.</td></tr>`;
   const tone = { "above team": cssVar("--green"), "in line": "#9aa3b8", "below team": cssVar("--amber"), "low volume": cssVar("--blue") };
   const shown = p.rows.slice(0, 16);
   hBarColoured("inProdChart", shown.map(r => r.label), shown.map(r => r.index), shown.map(r => tone[r.band]), (v) => fmtInt(v));
   document.getElementById("inProdNote").textContent = p.team && p.team.enquiries !== undefined
-    ? `Team average per 28 days: ${p.team.enquiries} enquiries, ${p.team.test_drives} test drives, ${p.team.bookings} new bookings, ${p.team.retails} retails. Team enquiry → booking: ${p.team_conv.e2b}%. Consultants with fewer than 30 enquiries are marked “low volume” and not ranked as above or below team.`
+    ? `Team average per 28 days: ${fmtInt(p.team.enquiries)} enquiries, ${fmtInt(p.team.test_drives)} test drives, ${fmtInt(p.team.bookings)} new bookings, ${fmtInt(p.team.retails)} retails. Team enquiry → booking: ${fmtPct0(p.team_conv.e2b)}. Consultants with fewer than 30 enquiries are marked “low volume” and not ranked as above or below team.`
     : "";
 }
 
