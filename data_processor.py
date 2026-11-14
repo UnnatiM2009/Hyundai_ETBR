@@ -52,6 +52,34 @@ import numpy as np
 
 import stock_engine as se
 
+# India Standard Time (UTC+05:30, no daylight saving). A fixed offset is used on purpose: it needs no tz database,
+# so it behaves identically on Windows, Render and any other host - whatever timezone the server itself is set to.
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+
+
+def ist_now() -> dt.datetime:
+    return dt.datetime.now(IST)
+
+
+def ist_today() -> dt.date:
+    """Today's date in India - the server may be on UTC, where the date is still 'yesterday' until 05:30 IST."""
+    return ist_now().date()
+
+
+def data_updated_at() -> Optional[dt.datetime]:
+    """When the workbook(s) were last uploaded (file modified time), in IST. A server restart or a Refresh
+    does not change this - only a real upload does."""
+    stamps = []
+    for path in (ENQUIRY_FILE, STOCK_FILE):
+        try:
+            if os.path.exists(path):
+                stamps.append(os.path.getmtime(path))
+        except OSError:
+            pass
+    if not stamps:
+        return None
+    return dt.datetime.fromtimestamp(max(stamps), IST)
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 ENQUIRY_FILE = os.path.join(DATA_DIR, "Enquiry.xlsx")
@@ -529,7 +557,7 @@ class DashboardData:
         self.stock: pd.DataFrame = pd.DataFrame()
         self.stock_info: dict = {}
         self.last_loaded: Optional[dt.datetime] = None
-        self.current_period: str = dt.date.today().strftime("%Y-%m")
+        self.current_period: str = ist_today().strftime("%Y-%m")
         self.previous_period: str = _shift_period(self.current_period, -1)
         self._reload_lock = threading.RLock()
         self.reload()
@@ -546,7 +574,7 @@ class DashboardData:
             self.enquiry, self.booking, self.retail = enq, booking, retail
             self.stock, self.stock_info = stock, stock_info
             self._compute_periods()
-            self.last_loaded = dt.datetime.now()
+            self.last_loaded = ist_now()
 
     # ------------------------------------------------------------------- #
     def _load_enquiry(self) -> pd.DataFrame:
@@ -706,7 +734,7 @@ class DashboardData:
         simply the calendar month before that."""
         e = self.enquiry
         if e.empty:
-            self.current_period = dt.date.today().strftime("%Y-%m")
+            self.current_period = ist_today().strftime("%Y-%m")
         else:
             # bookings and retails come from their own sheets; the Enquiry sheet supplies enquiry / lost dates
             all_dates = pd.concat(
@@ -714,7 +742,7 @@ class DashboardData:
                 ignore_index=True,
             ).dropna()
             self.current_period = (_period_str(all_dates.max()) if len(all_dates)
-                                   else dt.date.today().strftime("%Y-%m"))
+                                   else ist_today().strftime("%Y-%m"))
         self.previous_period = _shift_period(self.current_period, -1)
 
     # ------------------------------------------------------------------- #
@@ -933,7 +961,7 @@ def compute_comparison(period: Optional[str] = None, model: Optional[str] = None
     current_period = period or store.current_period
     previous_period = _shift_period(current_period, -1)
 
-    mtd_day = dt.date.today().day if mtd else None
+    mtd_day = ist_today().day if mtd else None
 
     current = compute_kpis(current_period, model, consultant, source, mtd_day=mtd_day, sub_source=sub_source)
     previous = compute_kpis(previous_period, model, consultant, source, mtd_day=mtd_day, sub_source=sub_source)
@@ -1076,7 +1104,7 @@ def compute_exchange_analytics(period: Optional[str], model: Optional[str] = Non
 
     ex = enq[enq["Exchange opted"] == "Y"]
     present = enq[enq["Present Car"] == "Y"]
-    this_year = int(pd.Timestamp.today().year)
+    this_year = int(ist_today().year)
     yrs = present["Model Year"].dropna()
     kpis = {
         "total_enquiries": len(enq),
@@ -1234,6 +1262,7 @@ def compute_meta() -> dict:
             {"value": p, "label": _month_label(p)} for p in store.available_periods()
         ],
         "last_loaded": store.last_loaded.isoformat() if store.last_loaded else None,
+        "data_updated": (data_updated_at() or store.last_loaded).isoformat() if (data_updated_at() or store.last_loaded) else None,
         "data_sources": dict(store.sheet_info),    # where Bookings / Retails are read from
         "row_counts": {
             "enquiry": int(len(e)),
@@ -1663,7 +1692,7 @@ def _as_of(as_of: Optional[str]) -> pd.Timestamp:
             return pd.Timestamp(as_of).normalize()
     except Exception:
         pass
-    return pd.Timestamp(dt.date.today())
+    return pd.Timestamp(ist_today())
 
 
 def _range(as_of: Optional[str], from_date: Optional[str], to_date: Optional[str]) -> tuple:
@@ -1943,7 +1972,7 @@ def _followup_count_series(df: pd.DataFrame, ref: Optional[pd.Timestamp] = None)
     if col is not None:
         n = pd.to_numeric(df[col], errors="coerce").clip(lower=0)
         return n, "column", str(col)
-    ref = ref if ref is not None else pd.Timestamp(dt.date.today())
+    ref = ref if ref is not None else pd.Timestamp(ist_today())
     end = _followup_end(df, ref)
     days = (end - df["Enquiry Date"]).dt.days.clip(lower=0)
     n = np.ceil(days / FOLLOWUP_CADENCE_DAYS)
@@ -2332,7 +2361,7 @@ def compute_vehicle_stock_units(model: Optional[str] = None, stage: Optional[str
                 "stage": r["Stock Type"],
             })
         rows.sort(key=lambda x: (-(x["tat"] if x["tat"] is not None else -1), x["model"], x["variant"]))
-    return {"as_of": dt.date.today().strftime("%d/%m/%Y"), "total": len(rows), "rows": rows}
+    return {"as_of": ist_today().strftime("%d/%m/%Y"), "total": len(rows), "rows": rows}
 
 
 def _vehicle_stock_group_row(label: str, sub: pd.DataFrame) -> dict:

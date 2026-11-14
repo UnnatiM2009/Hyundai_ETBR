@@ -62,7 +62,7 @@ _cache: dict = {}
 
 
 def _today() -> dt.date:
-    return dt.date.today()
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).date()   # India date, not the server's
 
 
 def _month_str(d) -> str:
