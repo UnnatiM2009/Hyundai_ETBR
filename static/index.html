@@ -108,7 +108,7 @@
         <div class="panel">
           <div class="panel-head">
             <h3>Enquiry → Booking → Retail funnel</h3>
-            <p>Where this period's enquiries ended up (Enquiry Status: Booked + Retail → Retail)</p>
+            <p>Where this period's enquiries ended up (Booked sheet → Retail sheet)</p>
           </div>
           <div id="overviewFunnel" class="funnel"></div>
         </div>
@@ -269,14 +269,14 @@
       <div class="panel">
         <div class="panel-head">
           <h3 id="dyGridT-booking">Bookings</h3>
-          <p>Enquiry Status = Booked (Booking Date) + Retail (Retail date) &mdash; consultant by model</p>
+          <p>Booked sheet, by Booking Date &mdash; consultant by model</p>
         </div>
         <div class="table-wrap" id="dyGrid-booking"></div>
       </div>
       <div class="panel">
         <div class="panel-head">
           <h3 id="dyGridT-retail">Retails</h3>
-          <p>Enquiry Status = Retail, by Retail date &mdash; consultant by model</p>
+          <p>Retail sheet, by Invoice Date &mdash; consultant by model</p>
         </div>
         <div class="table-wrap" id="dyGrid-retail"></div>
       </div>
@@ -1650,7 +1650,7 @@
     <h3>Update monthly data</h3>
     <p>Upload <strong>one Excel file</strong> (.xlsx) &mdash; the Enquiry workbook. It must contain these 3 sheets:</p>
     <ul class="upload-sheets">
-      <li><strong>Enquiry</strong> &mdash; all enquiries (Booking and Retail are read from the Enquiry Status column)</li>
+      <li><strong>Enquiry</strong> &mdash; all enquiries (Booking is read from the Booked sheet and Retail from the Retail sheet)</li>
       <li><strong>Physical Stock</strong> &mdash; vehicles physically in stock</li>
       <li><strong>In Transit</strong> &mdash; vehicles despatched but not yet received</li>
     </ul>
@@ -1669,6 +1669,6 @@
   </div>
 </div>
 
-<script src="/assets/js/app.js?v=20"></script>
+<script src="/assets/js/app.js?v=21"></script>
 </body>
 </html>

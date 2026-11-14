@@ -3311,8 +3311,8 @@ const SECTION_TITLES = {
   exchange: ["Exchange analytics", "Exchange opted, scrap, present car, maker, model and model year from the Enquiry sheet"],
   pincode: ["PIN code analytics", "Enquiry, test drive, booking, retails and booking cancel — PIN code wise (Pin No. column of the Enquiry sheet)"],
   followup: ["Enquiry follow-up", "Day-wise and previous-days pending follow-ups, date-wise schedule, follow-up and appointed cancels"],
-  booking: ["Booking analytics", "Enquiry Status = Booked + Retail (a retailed vehicle was a booking) — sources, consultants, trend and booking cancels"],
-  sales: ["Retail analytics", "Enquiry Status = Retail — vehicles sold, by model, consultant and source"],
+  booking: ["Booking analytics", "Booked sheet (every booking made, including those already retailed) — sources, consultants, trend and booking cancels"],
+  sales: ["Retail analytics", "Retail sheet — vehicles sold (by Invoice Date), by model, consultant and source"],
   inventory: ["Vehicle stock", "Physical stock and in-transit vehicles — inventory overview (aging, value, mix)"],
   stock: ["Enquiry wise stock", "Every live enquiry matched to Physical and In-Transit stock (Model + Variant + Colour)"],
   comparison: ["Month comparison", "Current month vs the previous month, metric by metric"],
@@ -3417,9 +3417,25 @@ function initUploadModal() {
     submitBtn.textContent = "Uploading…";
     msg.textContent = "";
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: data });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.detail || "Upload failed");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5 * 60 * 1000);          // large workbooks on slow links
+      let res;
+      try {
+        res = await fetch("/api/upload", { method: "POST", body: data, signal: ctrl.signal, credentials: "same-origin" });
+      } finally { clearTimeout(timer); }
+      // The server (or a proxy in front of it) may answer with plain text / HTML (413, 502, 504 ...):
+      // never let res.json() blow up with "Unexpected token <" - show something readable instead.
+      const raw = await res.text();
+      let json = {};
+      try { json = raw ? JSON.parse(raw) : {}; } catch (_) { json = {}; }
+      if (res.status === 401) { window.location.href = "/login"; return; }
+      if (!res.ok) {
+        const hint = { 403: "Not allowed (session expired or blocked origin) - sign in again.",
+                       413: "The file is too large for the server.",
+                       502: "The server was restarting - wait a minute and try again.",
+                       504: "The server took too long - try again." }[res.status];
+        throw new Error(json.detail || hint || `Upload failed (HTTP ${res.status}).`);
+      }
       msg.textContent = `Updated: ${json.updated.join(", ")}. Recalculating dashboard…` +
         (json.warning ? `  ⚠ ${json.warning}` : "");
       msg.className = json.warning ? "modal-msg err" : "modal-msg ok";
@@ -3427,7 +3443,7 @@ function initUploadModal() {
       await reloadAllLoadedSections();
       setTimeout(() => { modal.classList.remove("open"); form.reset(); msg.textContent = ""; }, json.warning ? 4500 : 1200);
     } catch (err) {
-      msg.textContent = err.message;
+      msg.textContent = err.name === "AbortError" ? "The upload timed out - check the connection and try again." : err.message;
       msg.className = "modal-msg err";
     } finally {
       submitBtn.disabled = false;
@@ -3792,7 +3808,7 @@ function renderFcModels(d) {
 function renderFcOpen(d) {
   const o = d.open, k = o.kpis;
   document.getElementById("fcOpenNote").textContent =
-    "Bookings still waiting for delivery (status Booked), and how many the booking-to-retail history says will be delivered or cancelled.";
+    "Bookings still waiting for delivery (on the Booked sheet, not yet invoiced), and how many the booking-to-retail history says will be delivered or cancelled.";
   renderKpiGrid("fcOpenKpis", [
     { label: "Open bookings", value: fmtInt(k.open), color: "var(--blue)", sub: `average age ${k.avg_age} days` },
     { label: "Waiting 30+ days", value: fmtInt(k.over_30), color: "var(--red)", sub: "needs a call this week" },
