@@ -92,11 +92,14 @@ const fmtShortDate = (isoDay) => {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" }).format(d);
 };
 const fmtStamp = (iso) => {
+  // Always shown in Indian Standard Time, whatever the server or the viewer's PC timezone is.
   if (!iso) return "—";
   const d = new Date(iso);
+  if (isNaN(d)) return "—";
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  }).format(d);
+    hour12: true, timeZone: "Asia/Kolkata",
+  }).format(d) + " IST";
 };
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -3363,7 +3366,7 @@ async function loadMeta() {
   const meta = await getJSON("/api/meta");
   state.meta = meta;
 
-  document.getElementById("lastSync").textContent = `Loaded ${fmtStamp(meta.last_loaded)} · Build V13`;
+  document.getElementById("lastSync").textContent = `Data updated ${fmtStamp(meta.data_updated || meta.last_loaded)} · Build V13`;
   document.getElementById("dealerCode").textContent =
     `Unnati Hyundai · ${fmtInt(meta.row_counts.enquiry)} enquiries · ${fmtInt(meta.row_counts.booking)} bookings · ${fmtInt(meta.row_counts.sales)} retails`;
 }
