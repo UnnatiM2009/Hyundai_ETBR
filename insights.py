@@ -78,8 +78,16 @@ def _events(d: "fc._Data") -> pd.DataFrame:
         frames.append(sub)
     add("enquiries", e["Enquiry Date"].notna(), d.enq_d)
     add("test_drives", e["Test Drive"].astype(str).str.upper().eq("Y"), d.enq_d)
-    add("bookings", e["is_booked"] | e["is_retail"], d.book_d)          # new bookings made (before they retail)
-    add("retails", e["is_retail"], d.ret_d)
+    # Bookings (Booked sheet, by Booking Date) and Retails (Retail sheet, by Invoice Date) have their own rows
+    for stage, frame, dates in (("bookings", d.bkf, d.book_d), ("retails", d.rtf, d.ret_d)):
+        sub = pd.DataFrame({
+            "consultant": frame["Consultant Name"].astype(str).str.strip(),
+            "model": frame["Model"].astype(str).str.strip(),
+            "source": frame["Source"].astype(str).str.strip(),
+        })[dates.notna()].copy()
+        sub["stage"] = stage
+        sub["date"] = dates[dates.notna()].values
+        frames.append(sub)
     ev = pd.concat(frames, ignore_index=True)
     for col in ("consultant", "model", "source"):
         ev.loc[ev[col].str.lower().isin(["", "nan", "none"]), col] = "Not captured"

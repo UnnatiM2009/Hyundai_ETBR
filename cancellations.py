@@ -55,8 +55,13 @@ def _day(v) -> str:
 
 
 def _gross_bookings(df: pd.DataFrame) -> pd.DataFrame:
-    """Every booking MADE (Booked + Retail + Booking Cancel), dated by Booking Date (column 'Booking Month')."""
-    return df[df["is_booked"] | df["is_retail"] | df["is_booking_cancel"]]
+    """Every booking MADE, dated by Booking Date (column 'Booking Month'): all rows of the Booked sheet
+    (still booked + already retailed) plus the bookings that were later cancelled (Enquiry Status = Booking Cancel)."""
+    made = dp.store.booking
+    cancelled = df[df["is_booking_cancel"]]
+    if made.empty:
+        return cancelled
+    return pd.concat([made, cancelled], ignore_index=True, sort=False)
 
 
 def _month_label(m: str) -> str:

@@ -89,12 +89,18 @@ class _Data:
         if self.empty:
             return
         norm = lambda s: pd.to_datetime(s, errors="coerce").dt.normalize()
+        # Enquiries / test drives / cancels come from the Enquiry sheet; Bookings from the Booked sheet and
+        # Retails from the Retail sheet.
+        bkf = dp.store.booking                      # one row per booking (Booked sheet)
+        rtf = dp.store.retail                       # one row per retail  (Retail sheet)
+        cancelled = e[e["is_booking_cancel"]]       # bookings that were made and later cancelled
+        gross_f = pd.concat([bkf, cancelled], ignore_index=True, sort=False)
         self.enq_d = norm(e["Enquiry Date"])
-        self.book_d = norm(e["Booking Date"])
-        self.ret_d = norm(e["Retail date"])
+        self.book_d = norm(bkf["Booking Date"])     # aligned with bkf
+        self.ret_d = norm(rtf["Retail date"])       # aligned with rtf
         self.lost_d = norm(e["Lost Date"])
-        self.evt_d = norm(e["Booking Event Date"])
-        self.e = e
+        self.evt_d = norm(bkf["Booking Event Date"])    # aligned with bkf
+        self.e, self.bkf, self.rtf = e, bkf, rtf
 
         first = self.enq_d.min()
         last = pd.concat([self.enq_d, self.book_d, self.ret_d]).max()
@@ -107,19 +113,19 @@ class _Data:
         self.first, self.last = first.normalize(), last.normalize()
         self.idx = pd.date_range(self.first, self.last)
         cnt = lambda mask, dates: dates[mask].value_counts().reindex(self.idx, fill_value=0).to_numpy(dtype=float)
-        gross = e["is_booked"] | e["is_retail"] | e["is_booking_cancel"]
+        gross_d = norm(gross_f["Booking Date"])
         self.y = {
             "enquiries": cnt(self.enq_d.notna(), self.enq_d),
             "test_drives": cnt(e["Test Drive"].astype(str).str.upper().eq("Y"), self.enq_d),
-            "gross": cnt(gross, self.book_d),                       # bookings MADE that day (before any retail / cancel)
-            "retails": cnt(e["is_retail"], self.ret_d),
-            "bookings": cnt(e["is_booking"], self.evt_d),           # dashboard "Total bookings" by its event date
+            "gross": cnt(gross_d.notna(), gross_d),                 # bookings MADE that day (before any retail / cancel)
+            "retails": cnt(self.ret_d.notna(), self.ret_d),         # Retail sheet, by Invoice Date
+            "bookings": cnt(self.evt_d.notna(), self.evt_d),        # dashboard "Total bookings" (Booked sheet) by its date
         }
         self.n = len(self.idx)
         self.dow = self.idx.dayofweek.to_numpy()
 
         # booking rows for the pipeline (integer day numbers)
-        bk = e[gross].copy()
+        bk = gross_f.copy()
         day = lambda s: (s - pd.Timestamp("1970-01-01")).dt.days
         self.bk_b = day(norm(bk["Booking Date"])).to_numpy(dtype=float)
         self.bk_r = np.where(bk["is_retail"], day(norm(bk["Retail date"])).fillna(np.nan), np.nan)
@@ -548,8 +554,12 @@ def _model_section(c: dict, month_i: int) -> dict:
         return {k: (v / tot if tot else 0.0) for k, v in sub.items()}
     shares["enquiries"] = count_by(d.enq_d.notna(), d.enq_d)
     shares["test_drives"] = count_by(e["Test Drive"].astype(str).str.upper().eq("Y"), d.enq_d)
-    shares["bookings"] = count_by(e["is_booking"], d.evt_d)
-    shares["retails"] = count_by(e["is_retail"], d.ret_d)
+    def count_by_frame(frame, dates):          # Booked / Retail sheet rows (their own frames, not the Enquiry frame)
+        sub = frame.loc[win(dates), "Model"].astype(str).str.strip().value_counts()
+        tot = float(sub.sum())
+        return {k: (v / tot if tot else 0.0) for k, v in sub.items()}
+    shares["bookings"] = count_by_frame(d.bkf, d.evt_d)
+    shares["retails"] = count_by_frame(d.rtf, d.ret_d)
     mid = {k: float(c["month_tot"][k][month_i].mean()) for k in SERIES}
     lo = {k: float(_pct(c["month_tot"][k][month_i], LOW_Q)) for k in SERIES}
     hi = {k: float(_pct(c["month_tot"][k][month_i], HIGH_Q)) for k in SERIES}

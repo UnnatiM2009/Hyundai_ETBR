@@ -4,8 +4,18 @@ data_processor.py
 All data-loading and metric-calculation logic for the Hyundai Enquiry /
 Test Drive / Booking / Retail / Follow-up / Enquiry-wise-Stock dashboard.
 
-ONE source of truth: the Enquiry workbook. Booking and Retail are no longer
-separate exports - they are read from the `Enquiry Status` column:
+ONE workbook, FIVE sheets (V19):
+
+    Enquiry sheet          -> enquiries, test drives, follow-ups, appointed, lost / cancels, exchange
+    Booked sheet           -> BOOKINGS   (one row per booking, dated by its Booking Date)
+    Retail sheet           -> RETAILS    (one row per invoice, dated by its Invoice Date)
+    Physical Stock sheet   -> physical stock   (see stock_engine.py)
+    In Transit sheet       -> in-transit stock (see stock_engine.py)
+
+Bookings and Retails are NO LONGER derived from the Enquiry Status column. If a workbook has no
+Booked / Retail sheet, the old Enquiry-Status based logic is used as a fallback so an older export still loads.
+
+Enquiry Status (still used for the Enquiry / Follow-up / Cancel pages and the stock matching):
 
     Enquiry Status              meaning
     ------------------------    -----------------------------------------
@@ -33,6 +43,7 @@ Design goals (unchanged from earlier versions):
 from __future__ import annotations
 
 import os
+import threading
 import datetime as dt
 from typing import Optional
 
@@ -45,6 +56,13 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 ENQUIRY_FILE = os.path.join(DATA_DIR, "Enquiry.xlsx")
 STOCK_FILE = os.path.join(DATA_DIR, "Stock.xlsx")
+
+# Sheet names (case-insensitive) that hold the Booking and Retail data
+BOOKED_SHEET_NAMES = ("booked", "booking", "bookings")
+RETAIL_SHEET_NAMES = ("retail", "retails")
+# Retail is counted on this column of the Retail sheet (falls back to the next one if blank).
+# "Invoice Date" is what the Enquiry sheet's own "Retail date" always carried. Use "Delivery Date" to count on delivery instead.
+RETAIL_DATE_COLUMNS = ("Invoice Date", "Confirm Date", "Delivery Date")
 
 CANCEL_KEYWORDS = ("cancel",)  # substring match, case-insensitive, on Enquiry Status
 
@@ -93,23 +111,60 @@ _DATE_COLUMNS = ["Enquiry Date", "Next Followup Date", "Lost Date", "Booking Dat
 
 def pick_enquiry_sheet(path: str):
     """The sheet holding the enquiries. The workbook may also carry 'Physical Stock' and
-    'In Transit' sheets, so choose by name, then by the Enquiry Status heading, then first."""
-    xl = pd.ExcelFile(path)
-    names = xl.sheet_names
-    for n in names:
-        if n.strip().lower() == "enquiry":
-            return n
-    for n in names:
-        if "enquiry" in n.strip().lower() or "enquiery" in n.strip().lower():
-            return n
-    for n in names:
-        try:
-            head = xl.parse(n, nrows=1)
-        except Exception:
-            continue
-        if "Enquiry Status" in {str(c).strip() for c in head.columns}:
-            return n
-    return names[0]
+    'In Transit' sheets, so choose by name, then by the Enquiry Status heading, then first.
+
+    The workbook is opened in a `with` block so the file handle is ALWAYS released - on Windows an
+    open handle stops the uploaded file from being renamed into place."""
+    with pd.ExcelFile(path) as xl:
+        names = xl.sheet_names
+        for n in names:
+            if n.strip().lower() == "enquiry":
+                return n
+        for n in names:
+            if "enquiry" in n.strip().lower() or "enquiery" in n.strip().lower():
+                return n
+        for n in names:
+            try:
+                head = xl.parse(n, nrows=1)
+            except Exception:
+                continue
+            if "Enquiry Status" in {str(c).strip() for c in head.columns}:
+                return n
+        return names[0]
+
+
+def read_named_sheet(path: str, names) -> Optional[pd.DataFrame]:
+    """Read the sheet whose (trimmed, lower-case) name is in `names`; None when the workbook has no such sheet."""
+    try:
+        xl = pd.ExcelFile(path)
+    except Exception:
+        return None
+    with xl:
+        for n in xl.sheet_names:
+            if n.strip().lower() in names:
+                df = xl.parse(n)
+                df.columns = [str(c).strip() for c in df.columns]
+                return df.dropna(how="all")
+    return None
+
+
+def _col(df: pd.DataFrame, name: str, default="") -> pd.Series:
+    """df[name] if the column exists, else a constant Series (keeps the loaders tolerant of layout changes)."""
+    if name in df.columns:
+        return df[name]
+    return pd.Series(default, index=df.index)
+
+
+def _pair_key(cust: pd.Series, model: pd.Series) -> pd.Series:
+    """Customer ID + Model - the link between an Enquiry row, a Booked row and a Retail row.
+    A row with no Customer ID gets a key of its own so it can never be paired by accident."""
+    c = cust.map(_text).str.upper()
+    m = model.map(_text).str.lower()
+    key = c + "|" + m
+    blank = c == ""
+    if blank.any():
+        key = key.where(~blank, "__none__" + pd.Series(range(len(c)), index=c.index).astype(str))
+    return key
 
 
 def _parse_date(series: Optional[pd.Series]) -> pd.Series:
@@ -232,6 +287,231 @@ def _empty_enquiry() -> pd.DataFrame:
     return pd.DataFrame(columns=cols)
 
 
+
+# --------------------------------------------------------------------------- #
+# Booked sheet / Retail sheet loaders
+# --------------------------------------------------------------------------- #
+
+_FLAG_COLUMNS = ["is_lost", "is_booked", "is_retail", "is_booking", "is_booking_cancel", "is_followup",
+                 "is_followup_cancel", "is_appointed", "is_appointed_cancel"]
+
+
+def _enquiry_lookup(enq: pd.DataFrame) -> pd.DataFrame:
+    """One Enquiry row per Customer ID + Model (a live row beats a lost one, then the latest enquiry),
+    used to fill in what the Booked / Retail sheets do not carry."""
+    d = enq.copy()
+    d["_key"] = _pair_key(d["Customer ID"], d["Model"])
+    d["_rank"] = d["is_lost"].astype(int)
+    d = d.sort_values(["_rank", "Enquiry Date"], ascending=[False, True], na_position="first")
+    return d.drop_duplicates("_key", keep="last").set_index("_key")
+
+
+def _fuel_by_variant(enq: pd.DataFrame) -> dict:
+    """Variant -> Fuel type, learnt from the Enquiry sheet (the Booked / Retail sheets have no fuel column)."""
+    d = enq[enq["Fuel type"].map(_text) != ""]
+    out = {}
+    for v, grp in d.groupby(d["Variant"].map(_text).str.lower()):
+        if v:
+            out[v] = grp["Fuel type"].value_counts().index[0]
+    return out
+
+
+def _from_lookup(look: pd.DataFrame, keys: pd.Series, col: str, default=""):
+    if col not in look.columns:
+        return pd.Series(default, index=keys.index)
+    return keys.map(look[col]).where(lambda s: s.notna(), default)
+
+
+def _common_columns(df: pd.DataFrame, raw: pd.DataFrame, look: pd.DataFrame, fuel_by_variant: dict) -> pd.DataFrame:
+    """Columns every Booked / Retail row needs so the shared views, filters and tables work."""
+    keys = df["_key"]
+    # enquiry details the sheets do not have
+    df["Fuel type"] = _from_lookup(look, keys, "Fuel type").map(_text)
+    blank = df["Fuel type"] == ""
+    if blank.any():
+        df.loc[blank, "Fuel type"] = df.loc[blank, "Variant"].str.lower().map(fuel_by_variant).fillna("")
+    td = _from_lookup(look, keys, "Test Drive", "N").astype(str).str.upper()
+    df["Test Drive"] = td.where(td.isin(["Y", "N"]), "N")
+    if "Enquiry Date" not in df.columns:
+        df["Enquiry Date"] = pd.NaT
+    ed = _from_lookup(look, keys, "Enquiry Date", pd.NaT)
+    df["Enquiry Date"] = df["Enquiry Date"].where(df["Enquiry Date"].notna(), pd.to_datetime(ed, errors="coerce"))
+    df["enquiry aging days"] = pd.to_numeric(_from_lookup(look, keys, "enquiry aging days", 0), errors="coerce").fillna(0)
+    df["Consultant Remarks"] = df.get("Consultant Remarks", pd.Series("", index=df.index)).map(_text)
+    for name in ("lost reason", "Lost Remark"):
+        df[name] = ""
+    df["Lost Date"] = pd.NaT
+    df["Next Followup Date"] = pd.NaT
+    # contact / location: the sheet's own value, else the Enquiry sheet's
+    enq_phone = _from_lookup(look, keys, "Phone").map(_text)
+    own_phone = df["Phone"].map(_text) if "Phone" in df.columns else pd.Series("", index=df.index)
+    df["Phone"] = enq_phone.where(enq_phone != "", own_phone)
+    df["Contact Number"] = df["Phone"]
+    if "City" not in df.columns:
+        df["City"] = ""
+    city = df["City"].map(_text)
+    df["City"] = city.where(city != "", _from_lookup(look, keys, "City").map(_text)).replace("", "Unknown")
+    pin = df["Pin No."] if "Pin No." in df.columns else pd.Series("", index=df.index)
+    df["Pin No."] = pin.where(pin.map(_text) != "", _from_lookup(look, keys, "Pin No.", ""))
+    # exchange columns (the Exchange page reads the Enquiry frame; these keep the layout identical)
+    for name in _YN_COLUMNS:
+        if name not in df.columns:
+            df[name] = ""
+    for name in _EXCHANGE_TEXT:
+        df[name] = ""
+    df["Model Year"] = float("nan")
+    # status flags that are never true for a booking / retail row
+    for f in ("is_lost", "is_booking_cancel", "is_followup", "is_followup_cancel", "is_appointed", "is_appointed_cancel"):
+        df[f] = False
+    return df
+
+
+def _clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for name in ("Model", "Source", "Sub-source", "Variant", "Color"):
+        df[name] = df[name].map(_text)
+    df["Model"] = df["Model"].replace("", "Unknown")
+    df["Source"] = df["Source"].replace("", "Unknown")
+    df["Sub-source"] = df["Sub-source"].replace("", "Unknown")
+    df["Consultant Name"] = df["Consultant Name"].map(_text).replace("", "Unassigned")
+    df["Customer ID"] = df["Customer ID"].map(_text)
+    df["Name of the Customer"] = df["Name of the Customer"].map(_text)
+    return df
+
+
+def _build_booking(raw: pd.DataFrame, look: pd.DataFrame, fuel_by_variant: dict) -> pd.DataFrame:
+    """One row per Booked-sheet row. Source / Sub-source come from the sheet's Main Source / Sub Source."""
+    df = pd.DataFrame(index=raw.index)
+    df["Customer ID"] = _col(raw, "Customer ID")
+    df["Name of the Customer"] = _col(raw, "Name of the Customer")
+    df["Model"] = _col(raw, "Model")
+    df["Variant"] = _col(raw, "Variant")
+    df["Color"] = _col(raw, "Color")
+    df["Consultant Name"] = _col(raw, "Consultant Name")
+    df["Source"] = _col(raw, "Main Source", _col(raw, "Source"))
+    df["Sub-source"] = _col(raw, "Sub Source", _col(raw, "Sub-source"))
+    df["Phone"] = _col(raw, "Contact Number").astype(str).str.replace(r"\.0$", "", regex=True)
+    df["Booking Date"] = _parse_date(_col(raw, "Booking Date", pd.NaT))
+    df["Enquiry Date"] = _parse_date(_col(raw, "Enquiry Date", pd.NaT))
+    df["Retail date"] = pd.NaT
+    df["Exchange opted"] = _yn(_col(raw, "Exchange"))
+    df["Consultant Remarks"] = _col(raw, "Last follow-up Remarks")
+    df = _clean_text_columns(df)
+    df["_key"] = _pair_key(df["Customer ID"], df["Model"])
+    df = _common_columns(df, raw, look, fuel_by_variant)
+    df["Exchange opted"] = _yn(_col(raw, "Exchange"))      # the Booked sheet's own Exchange Y/N
+    # until it is paired with an invoice a booking is "Booked" (pending delivery)
+    df["is_retail"] = False
+    df["is_booked"] = True
+    df["is_booking"] = True
+    df["Enquiry Status"] = "Booked"
+    df["Status Key"] = _skey("Booked")
+    return df
+
+
+def _build_retail(raw: pd.DataFrame, look: pd.DataFrame, fuel_by_variant: dict) -> pd.DataFrame:
+    """One row per Retail-sheet row, counted on the Invoice Date (see RETAIL_DATE_COLUMNS)."""
+    df = pd.DataFrame(index=raw.index)
+    df["Customer ID"] = _col(raw, "CustomerID", _col(raw, "Customer ID"))
+    df["Name of the Customer"] = _col(raw, "Registration Name", _col(raw, "Name of the Customer"))
+    df["Model"] = _col(raw, "Model")
+    df["Variant"] = _col(raw, "Variant")
+    df["Color"] = _col(raw, "Color")
+    df["Consultant Name"] = _col(raw, "Consultant Name")
+    df["Source"] = _col(raw, "Source")
+    df["Sub-source"] = _col(raw, "Sub-source")
+    df["Phone"] = _col(raw, "Contact Num1", _col(raw, "Contact Number")).astype(str).str.replace(r"\.0$", "", regex=True)
+    df["City"] = _col(raw, "City")
+    df["Pin No."] = _col(raw, "Pin No.", "")
+    df["Booking Date"] = _parse_date(_col(raw, "Booking Date", pd.NaT))
+    rd = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+    for name in RETAIL_DATE_COLUMNS:
+        if name in raw.columns:
+            d = _parse_date(raw[name])
+            rd = rd.where(rd.notna(), d)
+    df["Retail date"] = rd
+    df["Enquiry Date"] = pd.NaT
+    df = _clean_text_columns(df)
+    df["_key"] = _pair_key(df["Customer ID"], df["Model"])
+    df = _common_columns(df, raw, look, fuel_by_variant)
+    df["is_retail"] = True
+    df["is_booked"] = False
+    df["is_booking"] = True
+    df["Enquiry Status"] = "Retail"
+    df["Status Key"] = _skey("Retail")
+    return df
+
+
+def _pair_booking_retail(booking: pd.DataFrame, retail: pd.DataFrame) -> None:
+    """Link each Retail row to its Booked row (same Customer ID + Model; when a customer has several, in booking
+    order). A booking with an invoice is 'Retail'; one without is still 'Booked' (pending delivery).
+    The Retail row also borrows the Enquiry Date / Booking Date it lacks from its booking."""
+    for f in (booking, retail):
+        f["_n"] = f.sort_values("Booking Date", kind="stable").groupby("_key").cumcount()
+    rmap = dict(zip(zip(retail["_key"], retail["_n"]), retail["Retail date"]))
+    bmap = dict(zip(zip(booking["_key"], booking["_n"]), zip(booking["Booking Date"], booking["Enquiry Date"])))
+
+    tup = list(zip(booking["_key"], booking["_n"]))
+    booking["is_retail"] = [t in rmap for t in tup]
+    booking["is_booked"] = ~booking["is_retail"]
+    booking["Retail date"] = pd.to_datetime(pd.Series([rmap.get(t, pd.NaT) for t in tup], index=booking.index))
+    booking["Enquiry Status"] = np.where(booking["is_retail"], "Retail", "Booked")
+    booking["Status Key"] = booking["Enquiry Status"].map(_skey)
+
+    rt = list(zip(retail["_key"], retail["_n"]))
+    b_date = pd.to_datetime(pd.Series([bmap.get(t, (pd.NaT, pd.NaT))[0] for t in rt], index=retail.index))
+    e_date = pd.to_datetime(pd.Series([bmap.get(t, (pd.NaT, pd.NaT))[1] for t in rt], index=retail.index))
+    retail["Booking Date"] = retail["Booking Date"].where(retail["Booking Date"].notna(), b_date)
+    retail["Enquiry Date"] = retail["Enquiry Date"].where(retail["Enquiry Date"].notna(), e_date)
+
+
+def _finish_dates(df: Optional[pd.DataFrame]) -> None:
+    """Month columns and durations, computed exactly like the Enquiry frame does."""
+    if df is None or df.empty:
+        return
+    df["Month"] = df["Enquiry Date"].dt.strftime("%Y-%m")
+    df["Booking Month"] = _month_of(df["Booking Date"], df["Month"])
+    # A booking is counted in the month of its Booking Date (the Booked sheet lists every booking made,
+    # including the ones that have since been invoiced).
+    df["Booking Event Date"] = df["Booking Date"]
+    df["Booking Event Month"] = _month_of(df["Booking Event Date"], df["Month"])
+    df["Retail Month"] = _month_of(df["Retail date"], df["Month"])
+    df["Lost Month"] = _month_of(df["Lost Date"], df["Month"])
+    df["booking_days"] = (df["Booking Date"] - df["Enquiry Date"]).dt.days.clip(lower=0)
+    df["retail_days"] = (df["Retail date"] - df["Booking Date"]).dt.days.clip(lower=0)
+
+
+def _flag_enquiry_from_sheets(enq: pd.DataFrame, booking: Optional[pd.DataFrame], retail: Optional[pd.DataFrame]) -> None:
+    """Set is_booking / is_booked / is_retail on the Enquiry frame from the Booked and Retail sheets.
+    Each sheet row marks ONE live (not cancelled) enquiry of the same Customer ID + Model, so a customer with
+    several enquiries for a model is never counted twice. When there are several, the enquiry that actually
+    converted wins (its Enquiry Status already says Booked / Retail, or it carries a Booking Date), and after
+    that the latest one - a fresh follow-up opened after the purchase is not the enquiry that bought the car."""
+    key = _pair_key(enq["Customer ID"], enq["Model"])
+    live = ~enq["is_lost"]
+    converted = (enq["Status Key"].isin(BOOKING_STATUSES | RETAIL_STATUSES) * 2
+                 + (enq["Booking Date"].notna() | enq["Retail date"].notna()) * 1)
+    epoch = pd.Timestamp("1970-01-01")
+    order = converted.astype("int64") * 10**12 + (enq["Enquiry Date"].fillna(epoch) - epoch).dt.total_seconds().astype("int64")
+
+    def marked(frame: Optional[pd.DataFrame]) -> pd.Series:
+        out = pd.Series(False, index=enq.index)
+        if frame is None or frame.empty or "_key" not in frame.columns:
+            return out
+        wanted = set(frame["_key"])
+        cand = enq.index[live & key.isin(wanted)]
+        if len(cand) == 0:
+            return out
+        best = order.loc[cand].groupby(key.loc[cand]).idxmax()
+        out.loc[best.values] = True
+        return out
+
+    is_ret = marked(retail) if retail is not None else enq["is_retail"]
+    is_bk = (marked(booking) if booking is not None else enq["is_booking"]) | is_ret
+    enq["is_retail"] = is_ret
+    enq["is_booking"] = is_bk
+    enq["is_booked"] = is_bk & ~is_ret
+
+
 # --------------------------------------------------------------------------- #
 # Main data container
 # --------------------------------------------------------------------------- #
@@ -242,19 +522,31 @@ class DashboardData:
 
     def __init__(self):
         self.enquiry: pd.DataFrame = _empty_enquiry()
+        # Bookings (Booked sheet) and Retails (Retail sheet), each in the same column layout as `enquiry`
+        self.booking: pd.DataFrame = _empty_enquiry()
+        self.retail: pd.DataFrame = _empty_enquiry()
+        self.sheet_info: dict = {"booking": "none", "retail": "none"}
         self.stock: pd.DataFrame = pd.DataFrame()
         self.stock_info: dict = {}
         self.last_loaded: Optional[dt.datetime] = None
         self.current_period: str = dt.date.today().strftime("%Y-%m")
         self.previous_period: str = _shift_period(self.current_period, -1)
+        self._reload_lock = threading.RLock()
         self.reload()
 
     # ------------------------------------------------------------------- #
     def reload(self):
-        self.enquiry = self._load_enquiry()
-        self._load_stock()
-        self._compute_periods()
-        self.last_loaded = dt.datetime.now()
+        """Re-read the workbook(s). Everything is built into local variables first and swapped in together
+        at the end, under a lock, so (a) a request that arrives mid-reload never sees half-new / half-old
+        data and (b) if anything raises, the data that was already loaded stays in place."""
+        with self._reload_lock:
+            enq = self._load_enquiry()
+            booking, retail = self._load_booking_retail(enq)   # also re-flags `enq` from the Booked / Retail sheets
+            stock, stock_info = self._read_stock()
+            self.enquiry, self.booking, self.retail = enq, booking, retail
+            self.stock, self.stock_info = stock, stock_info
+            self._compute_periods()
+            self.last_loaded = dt.datetime.now()
 
     # ------------------------------------------------------------------- #
     def _load_enquiry(self) -> pd.DataFrame:
@@ -330,24 +622,82 @@ class DashboardData:
         df["retail_days"] = (df["Retail date"] - df["Booking Date"]).dt.days.clip(lower=0)         # booking -> retail
         return df
 
+
     # ------------------------------------------------------------------- #
-    def _load_stock(self):
+    def _load_booking_retail(self, enq: pd.DataFrame) -> tuple:
+        """Bookings come from the Booked sheet and Retails from the Retail sheet.
+
+        Each sheet row is one booking / one retail. Both frames use the same columns as the Enquiry frame
+        (Model, Consultant Name, Source, Booking Date, Retail date, ...), so every page, filter and
+        breakdown keeps working unchanged. Details the sheet does not carry (fuel type, test drive,
+        enquiry age, city ...) are looked up from the Enquiry sheet by Customer ID + Model.
+
+        Without a Booked / Retail sheet the old behaviour (Enquiry Status) is used for that part."""
+        self.sheet_info = {"booking": "Enquiry Status", "retail": "Enquiry Status"}
+        booked_raw = retail_raw = None
+        if os.path.exists(ENQUIRY_FILE) and not enq.empty:
+            booked_raw = read_named_sheet(ENQUIRY_FILE, BOOKED_SHEET_NAMES)
+            retail_raw = read_named_sheet(ENQUIRY_FILE, RETAIL_SHEET_NAMES)
+        if enq.empty:
+            self.sheet_info = {"booking": "none", "retail": "none"}
+            return _empty_enquiry(), _empty_enquiry()
+
+        look = _enquiry_lookup(enq)
+        fuel_by_variant = _fuel_by_variant(enq)
+        retail = _build_retail(retail_raw, look, fuel_by_variant) if retail_raw is not None else None
+        booking = _build_booking(booked_raw, look, fuel_by_variant) if booked_raw is not None else None
+        if retail is not None:
+            self.sheet_info["retail"] = "Retail sheet"
+        if booking is not None:
+            self.sheet_info["booking"] = "Booked sheet"
+
+        # Booking <-> Retail pairing (a booking that has an invoice is "Retail", otherwise still "Booked")
+        if booking is not None and retail is not None:
+            _pair_booking_retail(booking, retail)
+        elif booking is not None:                          # no Retail sheet: a booking is retailed when the Enquiry says so
+            sk = booking["_key"].map(look["Status Key"]) if "Status Key" in look.columns else None
+            booking["is_retail"] = sk.fillna("").eq(_skey("Retail")).values if sk is not None else False
+            booking["is_booked"] = ~booking["is_retail"]
+            booking["Enquiry Status"] = np.where(booking["is_retail"], "Retail", "Booked")
+            booking["Status Key"] = booking["Enquiry Status"].map(_skey)
+        _finish_dates(booking)
+        _finish_dates(retail)
+
+        # Fallback for a missing sheet: the previous Enquiry-Status based slices
+        if booking is None:
+            booking = enq[enq["is_booking"]].copy()
+        if retail is None:
+            retail = enq[enq["is_retail"]].copy()
+
+        # Re-flag the Enquiry frame so the funnel (test drive -> booking -> retail, exchange conversion,
+        # booked follow-ups ...) agrees with the sheets.
+        if self.sheet_info["booking"] == "Booked sheet" or self.sheet_info["retail"] == "Retail sheet":
+            _flag_enquiry_from_sheets(enq, booking if self.sheet_info["booking"] == "Booked sheet" else None,
+                                      retail if self.sheet_info["retail"] == "Retail sheet" else None)
+        for f in (booking, retail):
+            if "_key" in f.columns:
+                f.drop(columns=["_key", "_n"], errors="ignore", inplace=True)
+        return booking.reset_index(drop=True), retail.reset_index(drop=True)
+
+    # ------------------------------------------------------------------- #
+    def _read_stock(self):
         """Stock comes from a separate Stock.xlsx if one was uploaded, otherwise from the
-        'Physical Stock' and 'In Transit' sheets of the Enquiry workbook itself."""
-        self.stock = pd.DataFrame()
-        self.stock_info = {}
+        'Physical Stock' and 'In Transit' sheets of the Enquiry workbook itself.
+        Returns (stock_df, stock_info); a bad stock file never takes the dashboard down."""
         source = None
         if os.path.exists(STOCK_FILE):
             source = STOCK_FILE
         elif os.path.exists(ENQUIRY_FILE) and se.has_stock_sheets(ENQUIRY_FILE):
             source = ENQUIRY_FILE
         if source is None:
-            return
+            return pd.DataFrame(), {}
         try:
-            self.stock, self.stock_info = se.load_stock(source)
-        except Exception as exc:  # a bad stock file must never take the dashboard down
-            self.stock = pd.DataFrame()
-            self.stock_info = {"file": os.path.basename(source), "error": str(exc)}
+            return se.load_stock(source)
+        except Exception as exc:
+            return pd.DataFrame(), {"file": os.path.basename(source), "error": str(exc)}
+
+    def _load_stock(self):   # kept for any caller that still uses the old name
+        self.stock, self.stock_info = self._read_stock()
 
     # ------------------------------------------------------------------- #
     def _compute_periods(self):
@@ -358,8 +708,9 @@ class DashboardData:
         if e.empty:
             self.current_period = dt.date.today().strftime("%Y-%m")
         else:
+            # bookings and retails come from their own sheets; the Enquiry sheet supplies enquiry / lost dates
             all_dates = pd.concat(
-                [e["Enquiry Date"], e["Booking Date"], e["Retail date"], e["Lost Date"]],
+                [e["Enquiry Date"], e["Lost Date"], self.booking["Booking Date"], self.retail["Retail date"]],
                 ignore_index=True,
             ).dropna()
             self.current_period = (_period_str(all_dates.max()) if len(all_dates)
@@ -369,9 +720,12 @@ class DashboardData:
     # ------------------------------------------------------------------- #
     def available_periods(self) -> list:
         months = set()
-        for col in ("Month", "Booking Month", "Retail Month", "Lost Month"):
-            if col in self.enquiry.columns:
-                months |= set(self.enquiry[col].dropna().unique().tolist())
+        for frame, cols in ((self.enquiry, ("Month", "Lost Month")),
+                            (self.booking, ("Booking Month", "Booking Event Month")),
+                            (self.retail, ("Retail Month",))):
+            for col in cols:
+                if col in frame.columns:
+                    months |= set(frame[col].dropna().unique().tolist())
         months.add(self.current_period)
         months.add(self.previous_period)
         return sorted(months)
@@ -431,12 +785,13 @@ class DashboardData:
                 d = d[d[date_col].dt.day <= mtd_day]
         return d
 
-    # Each kind of event is a slice of the one Enquiry sheet, counted by its own date.
+    # Each kind of event is counted by its own date. Enquiry-type kinds are slices of the Enquiry sheet;
+    # "booked" comes from the Booked sheet and "retail" from the Retail sheet (see _FRAME_OF_KIND).
     _KIND_SPEC = {
         "enquiry": (None, "Month"),
         "appointed": ("is_appointed", "Month"),
-        "booked": ("is_booking", "Booking Event Month"),   # Bookings = Booked (by Booking Date) + Retail (by Retail date)
-        "retail": ("is_retail", "Retail Month"),
+        "booked": (None, "Booking Event Month"),   # Bookings = every row of the Booked sheet, by Booking Date
+        "retail": (None, "Retail Month"),          # Retails = every row of the Retail sheet, by Invoice Date
         "lost": ("is_lost", "Lost Month"),     # every lost enquiry, counted on its Lost Date (same basis as the cancel cards)
         "booking_cancel": ("is_booking_cancel", "Lost Month"),
         "followup_cancel": ("is_followup_cancel", "Lost Month"),
@@ -448,7 +803,7 @@ class DashboardData:
              age: Optional[str] = None, mtd_day: Optional[int] = None,
              sub_source: Optional[str] = None) -> pd.DataFrame:
         flag, month_col = self._KIND_SPEC[kind]
-        df = self.enquiry
+        df = {"booked": self.booking, "retail": self.retail}.get(kind, self.enquiry)
         if df.empty:
             return df
         if flag:
@@ -471,17 +826,20 @@ class DashboardData:
         enquiry_dates: dict = {}
         for d in ed:
             enquiry_dates.setdefault(d.strftime("%Y-%m"), []).append(d.strftime("%Y-%m-%d"))
+        # the Booked / Retail sheets can carry a model, consultant or source the Enquiry sheet never mentions
+        allf = pd.concat([f[["Model", "Consultant Name", "Source", "Sub-source"]] for f in (e, self.booking, self.retail)
+                          if not f.empty], ignore_index=True)
         return {
             "ages": ages,
             "enquiry_dates": enquiry_dates,
-            "models": clean(set(e["Model"].dropna().astype(str).str.strip())),
-            "consultants": clean(set(e["Consultant Name"].dropna().astype(str).str.strip())),
-            "sources": clean(set(e["Source"].dropna().astype(str).str.strip())),
-            "sub_sources": clean(set(e["Sub-source"].dropna().astype(str).str.strip())),
+            "models": clean(set(allf["Model"].dropna().astype(str).str.strip())),
+            "consultants": clean(set(allf["Consultant Name"].dropna().astype(str).str.strip())),
+            "sources": clean(set(allf["Source"].dropna().astype(str).str.strip())),
+            "sub_sources": clean(set(allf["Sub-source"].dropna().astype(str).str.strip())),
             # each Sub-source sits under one Source, so picking a Source narrows the Sub-source list
             "sub_source_map": {
                 str(s).strip(): clean(set(g["Sub-source"].dropna().astype(str).str.strip()))
-                for s, g in e.groupby("Source")
+                for s, g in allf.groupby("Source")
             },
         }
 
@@ -523,8 +881,8 @@ def compute_kpis(period: Optional[str], model: Optional[str] = None,
 
     total_enquiries = len(enq)
     td_done = int((enq["Test Drive"] == "Y").sum()) if not enq.empty else 0
-    total_bookings = len(booked)          # Enquiry Status = Booked + Retail (retail vehicles were bookings)
-    total_retail = len(retail)            # Enquiry Status = Retail (vehicle sold)
+    total_bookings = len(booked)          # rows of the Booked sheet (by Booking Date)
+    total_retail = len(retail)            # rows of the Retail sheet (by Invoice Date)
     lost_enquiries = len(lost_view)       # all "Cancel" statuses, counted on Lost Date (matches Booking/Follow-up/Appointed cancel cards)
     appointed = int(enq["is_appointed"].sum()) if not enq.empty else 0
 
@@ -825,8 +1183,7 @@ def compute_enquiry_analytics(period: Optional[str], model: Optional[str] = None
 def compute_booking_analytics(period: Optional[str], model: Optional[str] = None,
                               consultant: Optional[str] = None, source: Optional[str] = None,
                               sub_source: Optional[str] = None) -> dict:
-    """Bookings = Enquiry Status 'Booked' (by Booking Date) + 'Retail' (by Retail date) - a retailed vehicle was a booking.
-    Booking cancels = 'Booking Cancel' (by Lost Date)."""
+    """Bookings = rows of the Booked sheet (by Booking Date). Booking cancels = Enquiry Status 'Booking Cancel' (by Lost Date)."""
     book = store.view("booked", period, model, consultant, source, sub_source=sub_source)
     cancel = store.view("booking_cancel", period, model, consultant, source, sub_source=sub_source)
 
@@ -850,7 +1207,7 @@ def compute_booking_analytics(period: Optional[str], model: Optional[str] = None
 def compute_sales_analytics(period: Optional[str], model: Optional[str] = None,
                             consultant: Optional[str] = None, source: Optional[str] = None,
                             sub_source: Optional[str] = None) -> dict:
-    """Retails = Enquiry Status 'Retail' - a vehicle sold (by Retail date)."""
+    """Retails = rows of the Retail sheet - a vehicle sold (by Invoice Date)."""
     sales = store.view("retail", period, model, consultant, source, sub_source=sub_source)
     avg_days = float(sales["retail_days"].mean()) if not sales.empty else 0.0
     if pd.isna(avg_days):
@@ -877,10 +1234,11 @@ def compute_meta() -> dict:
             {"value": p, "label": _month_label(p)} for p in store.available_periods()
         ],
         "last_loaded": store.last_loaded.isoformat() if store.last_loaded else None,
+        "data_sources": dict(store.sheet_info),    # where Bookings / Retails are read from
         "row_counts": {
             "enquiry": int(len(e)),
-            "booking": int(e["is_booking"].sum()) if not e.empty else 0,   # status = Booked + Retail
-            "sales": int(e["is_retail"].sum()) if not e.empty else 0,     # status = Retail
+            "booking": int(len(store.booking)),   # rows of the Booked sheet
+            "sales": int(len(store.retail)),      # rows of the Retail sheet
             "stock": stock_rows,
         },
     }

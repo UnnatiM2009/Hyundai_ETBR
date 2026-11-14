@@ -2,7 +2,7 @@
 import os, time, secrets, hashlib, threading
 from collections import defaultdict
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 from openpyxl import load_workbook
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
@@ -18,6 +18,20 @@ SESSIONS = {}
 FAILURES = defaultdict(list)
 LOCK = threading.Lock()
 TTL = 8 * 60 * 60
+
+def same_origin(request):
+    """CSRF guard: a browser POST must come from this very site. Compare the Origin header's host:port with the
+    Host the browser actually used. Behind a TLS proxy (Render, nginx ...) the app sees http:// while the browser
+    sent https://, so comparing full URLs wrongly rejects EVERY upload and login - the scheme is ignored here,
+    and X-Forwarded-Host is honoured when the proxy sets it."""
+    origin = request.headers.get('origin')
+    if not origin: return True
+    try: origin_host = urlparse(origin).netloc.lower()
+    except ValueError: return False
+    hosts = {request.headers.get('host','').lower(),
+             request.headers.get('x-forwarded-host','').split(',')[0].strip().lower()}
+    hosts.discard('')
+    return origin_host in hosts
 
 def accounts():
     """Read afresh so account removal, password and role changes revoke sessions."""
@@ -85,7 +99,7 @@ def install_auth(app, static_dir):
 
     @app.post('/api/auth/login')
     async def login(request: Request):
-        if request.headers.get('origin') and request.headers['origin'] != str(request.base_url).rstrip('/'):
+        if not same_origin(request):
             return JSONResponse({'detail':'Invalid origin'}, status_code=403)
         body = await request.body()
         if len(body) > 8192: return JSONResponse({'detail':'Request too large'}, status_code=413)
@@ -141,8 +155,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
             return RedirectResponse('/login',status_code=303)
         request.state.user = user
         if request.method not in ('GET','HEAD','OPTIONS'):
-            origin = request.headers.get('origin')
-            if origin and origin != str(request.base_url).rstrip('/'):
+            if not same_origin(request):
                 return JSONResponse({'detail':'Invalid origin'},status_code=403)
         if user['access']=='limited' and path.startswith('/api/'):
             allowed = {'/api/auth/me','/api/meta','/api/filters','/api/kpis','/api/enquiry','/api/test-drive',

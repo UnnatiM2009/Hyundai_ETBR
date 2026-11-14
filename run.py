@@ -68,7 +68,8 @@ def main():
         print("  Press CTRL+C to stop")
     print("=" * 60)
 
-    uvicorn.run("main:app", host=host, port=port, reload=False, log_level="info")
+    uvicorn.run("main:app", host=host, port=port, reload=False, log_level="info",
+                proxy_headers=True, forwarded_allow_ips="*" if on_cloud else "127.0.0.1")
 
 
 if __name__ == "__main__":

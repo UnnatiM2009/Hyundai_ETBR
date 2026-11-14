@@ -258,23 +258,24 @@ def typed_sheets(path: str) -> list:
     the next ones are In Transit)."""
     try:
         xl = pd.ExcelFile(path)
-        names = xl.sheet_names
     except Exception:
         return []
-    out = []
-    for n in names:
-        low = n.strip().lower()
-        if "transit" in low:
-            out.append((n, TRANSIT))
-        elif "physical" in low:
-            out.append((n, PHYSICAL))
-    if out:
-        return out
-    found = []
-    for n in names:
-        is_stock, kind = _sheet_type_from_contents(xl, n)
-        if is_stock:
-            found.append((n, kind))
+    with xl:
+        names = xl.sheet_names
+        out = []
+        for n in names:
+            low = n.strip().lower()
+            if "transit" in low:
+                out.append((n, TRANSIT))
+            elif "physical" in low:
+                out.append((n, PHYSICAL))
+        if out:
+            return out
+        found = []
+        for n in names:
+            is_stock, kind = _sheet_type_from_contents(xl, n)
+            if is_stock:
+                found.append((n, kind))
     for i, (n, kind) in enumerate(found):
         out.append((n, kind or (PHYSICAL if i == 0 else TRANSIT)))
     return out
@@ -285,11 +286,11 @@ def has_stock_sheets(path: str) -> bool:
 
 
 def _read_stock_sheet(path: str):
-    xl = pd.ExcelFile(path)
-    for sheet in xl.sheet_names:
-        df = _read_one_sheet(xl, sheet)
-        if df is not None:
-            return df, sheet
+    with pd.ExcelFile(path) as xl:
+        for sheet in xl.sheet_names:
+            df = _read_one_sheet(xl, sheet)
+            if df is not None:
+                return df, sheet
     raise ValueError(
         "Could not find a header row in the stock workbook. It needs at least a Model and a "
         "Variant column (plus ideally Colour, VIN/Chassis and a Physical/Transit column)."
@@ -424,10 +425,11 @@ def load_stock(path: str) -> tuple:
         raw, sheet = _read_stock_sheet(path)
         return _build_stock(raw, sheet, path, None)
 
-    xl = pd.ExcelFile(path)
     frames, infos, per_sheet, warnings = [], [], {}, []
-    for sheet, forced in sheets:
-        raw = _read_one_sheet(xl, sheet)
+    # read every needed sheet first, then CLOSE the workbook (an open handle blocks renames on Windows)
+    with pd.ExcelFile(path) as xl:
+        raws = [(sheet, forced, _read_one_sheet(xl, sheet)) for sheet, forced in sheets]
+    for sheet, forced, raw in raws:
         if raw is None:
             per_sheet[sheet] = 0
             continue

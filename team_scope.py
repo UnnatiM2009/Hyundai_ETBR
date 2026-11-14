@@ -14,8 +14,8 @@ How it works
 * install() gives the shared data store (data_processor.store) a "scoped" view of its enquiry
   table: while SCOPE is set, `store.enquiry` returns only the rows whose Consultant Name is in the
   set. Every existing calculation (KPIs, breakdowns, follow-ups, comparison, filters, meta, the
-  new Daily report ...) reads `store.enquiry`, so they are all limited automatically and none of
-  their logic had to change. data_processor.py itself is NOT modified.
+  new Daily report ...) reads `store.enquiry` / `store.booking` / `store.retail` (the Enquiry, Booked and
+  Retail sheets), so they are all limited automatically and none of their logic had to change. data_processor.py itself is NOT modified.
 * A Team Leader is only restricted once consultants are listed for them (see below). With the
   Consultants cell left blank they are NOT restricted and see everything, as before this feature.
   (Names are listed but none of them exist in the enquiry data -> the scope is non-empty and they
@@ -41,7 +41,9 @@ SCOPE: contextvars.ContextVar = contextvars.ContextVar("team_scope", default=Non
 CONSULTANT_COLUMN = "Consultant Name"
 
 _lock = threading.Lock()
-_cache = {"full": None, "frames": {}}
+# the tables a Team Leader's scope applies to (Bookings and Retails come from their own sheets)
+SCOPED_ATTRS = ("enquiry", "booking", "retail")
+_cache = {a: {"full": None, "frames": {}} for a in SCOPED_ATTRS}
 _installed = False
 
 
@@ -97,17 +99,18 @@ def describe(user: dict, full_frame=None, review: bool = False) -> dict:
     return {"restricted": True, "consultants": sorted(matched), "unmatched": unmatched}
 
 
-def _scoped(full):
+def _scoped(full, attr="enquiry"):
     scope = SCOPE.get()
     if scope is None or full is None or CONSULTANT_COLUMN not in getattr(full, "columns", []):
         return full
     with _lock:
-        if _cache["full"] is not full:                      # data was reloaded: forget old views
-            _cache["full"], _cache["frames"] = full, {}
-        frame = _cache["frames"].get(scope)
+        cache = _cache[attr]
+        if cache["full"] is not full:                       # data was reloaded: forget old views
+            cache["full"], cache["frames"] = full, {}
+        frame = cache["frames"].get(scope)
         if frame is None:
             frame = full[full[CONSULTANT_COLUMN].map(norm).isin(scope)].copy()
-            _cache["frames"][scope] = frame
+            cache["frames"][scope] = frame
         return frame
 
 
@@ -122,11 +125,15 @@ def install(store_cls) -> None:
     if _installed:
         return
 
-    def _get(self):
-        return _scoped(self.__dict__.get("enquiry"))
+    def make(attr):
+        def _get(self):
+            return _scoped(self.__dict__.get(attr), attr)
 
-    def _set(self, value):
-        self.__dict__["enquiry"] = value
+        def _set(self, value):
+            self.__dict__[attr] = value
 
-    store_cls.enquiry = property(_get, _set)
+        return property(_get, _set)
+
+    for attr in SCOPED_ATTRS:
+        setattr(store_cls, attr, make(attr))
     _installed = True

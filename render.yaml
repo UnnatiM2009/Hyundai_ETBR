@@ -7,7 +7,7 @@
 # If you'd rather set it up by hand instead of using a Blueprint, create a
 # "Web Service" manually with:
 #   Build command:  pip install -r requirements.txt
-#   Start command:  uvicorn main:app --host 0.0.0.0 --port $PORT
+#   Start command:  uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
 
 services:
   - type: web
@@ -15,7 +15,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION

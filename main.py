@@ -2,7 +2,8 @@
 main.py
 -------
 FastAPI backend for the Hyundai Enquiry / Test-Drive / Booking / Retail / Follow-up /
-Enquiry-wise-Stock dashboard. Booking and Retail come from the Enquiry sheet's `Enquiry Status`.
+Enquiry-wise-Stock dashboard. Enquiry comes from the 'Enquiry' sheet, Booking from the 'Booked' sheet,
+Retail from the 'Retail' sheet, Physical Stock / In Transit from their own sheets.
 
 Run with:  python run.py     (auto-opens the browser)
        or:  uvicorn main:app --reload
@@ -12,9 +13,12 @@ Deployment (Render, etc.): the start command is
 """
 
 import os
+import gc
+import time
 import base64
 import secrets
 import shutil
+import threading
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
@@ -528,7 +532,10 @@ def api_vehicle_stock_units(
 
 @app.post("/api/refresh")
 def api_refresh():
-    dp.store.reload()
+    try:
+        dp.store.reload()
+    except Exception as exc:
+        raise HTTPException(500, f"Reload failed: {exc}. The data already loaded is unchanged.")
     return {"status": "ok", "message": "Data reloaded from disk.", "meta": dp.compute_meta()}
 
 
@@ -542,8 +549,24 @@ def _validate_enquiry_file(path: str):
     missing = [c for c in ("Enquiry Date", "Enquiry Status", "Model") if c not in cols]
     if missing:
         raise ValueError("this doesn't look like the Enquiry export - missing column(s): " + ", ".join(missing))
-    if df.dropna(how="all").empty:
+    df = df.dropna(how="all")
+    if df.empty:
         raise ValueError(f"the '{sheet}' sheet has no rows")
+    # Dates are dd/mm/yyyy text. If most of them cannot be read, every month on the dashboard would be wrong.
+    parsed = dp._parse_date(df["Enquiry Date"])
+    bad = int(parsed.isna().sum())
+    if bad > max(5, 0.2 * len(df)):
+        raise ValueError(f"{bad} of {len(df)} rows have an unreadable 'Enquiry Date' (expected dd/mm/yyyy)")
+    # Bookings come from the 'Booked' sheet and Retails from the 'Retail' sheet. They are optional (an older
+    # export without them still loads, using Enquiry Status), but when present they must look right.
+    for label, names, needed in (("Booked", dp.BOOKED_SHEET_NAMES, ("Booking Date", "Model")),
+                                 ("Retail", dp.RETAIL_SHEET_NAMES, ("Invoice Date", "Model"))):
+        sub = dp.read_named_sheet(path, names)
+        if sub is None:
+            continue
+        gone = [c for c in needed if c not in sub.columns]
+        if gone:
+            raise ValueError(f"the '{label}' sheet is missing column(s): " + ", ".join(gone))
 
 
 def _validate_stock_file(path: str):
@@ -551,53 +574,173 @@ def _validate_stock_file(path: str):
     se.load_stock(path)   # raises ValueError with a readable message if unusable
 
 
+# --------------------------------------------------------------------------- #
+# Upload plumbing
+# --------------------------------------------------------------------------- #
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
+_UPLOAD_LOCK = threading.Lock()          # one upload / reload at a time
+
+
+def _safe_remove(path: str):
+    """Delete a file, never raising (a locked temp file is retried on the next start-up)."""
+    for _ in range(5):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        except OSError:
+            time.sleep(0.2)
+
+
+def _replace_with_retry(src: str, dst: str, attempts: int = 12, delay: float = 0.4):
+    """os.replace that survives Windows' short-lived file locks (antivirus, Excel preview, a handle that has
+    not been garbage-collected yet). On failure the caller gets a readable message, never a bare 500."""
+    last = None
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last = exc
+            gc.collect()                 # drops any pandas/openpyxl handle still waiting to be collected
+            time.sleep(delay)
+    raise OSError(f"the file '{os.path.basename(dst)}' is locked by another program - close it in Excel "
+                  f"(or any viewer) and upload again ({last})")
+
+
+def _cleanup_stale_uploads():
+    """Remove *.uploading leftovers from an upload that was interrupted (server stopped, browser closed ...)."""
+    try:
+        for name in os.listdir(dp.DATA_DIR):
+            full = os.path.join(dp.DATA_DIR, name)
+            if name.endswith(".uploading"):
+                _safe_remove(full)
+            elif name.endswith(".xlsx.bak"):
+                live = full[:-4]
+                if os.path.exists(live):
+                    _safe_remove(full)                 # upload finished fine, backup no longer needed
+                else:
+                    try: os.replace(full, live)        # crashed mid-swap: put the previous workbook back
+                    except OSError: pass
+    except OSError:
+        pass
+
+
+_cleanup_stale_uploads()
+
+
+def _save_upload(upload: UploadFile, tmp_path: str):
+    """Stream the upload to disk, refusing anything over MAX_UPLOAD_MB."""
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    size = 0
+    with open(tmp_path, "wb") as f:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise ValueError(f"the file is larger than {MAX_UPLOAD_MB} MB")
+            f.write(chunk)
+    if size == 0:
+        raise ValueError("the file is empty")
+
+
 @app.post("/api/upload")
-async def api_upload(
+def api_upload(      # plain `def`: FastAPI runs it in a worker thread, so a big workbook never freezes the server
     enquiry: Optional[UploadFile] = File(default=None),
     stock: Optional[UploadFile] = File(default=None),
 ):
     """Replace the Enquiry workbook and/or the Stock workbook, then reload everything.
-    Booking and Retail need no file of their own - they come from the Enquiry sheet's
-    `Enquiry Status` column (Booked / Retail).
+    Booking and Retail need no file of their own - they come from the 'Booked' and 'Retail' sheets of the
+    same workbook (Enquiry, Booked, Retail, Physical Stock and In Transit sheets).
 
-    Each file is checked BEFORE it replaces the current one, so a wrong file can never
-    wipe out the data that is already loaded."""
-    saved = []
-    stock_from_workbook = False
+    Safety rules:
+      * each file is validated BEFORE it replaces the current one, so a wrong file can never wipe the data;
+      * the previous file is kept as <name>.bak and put back if the new one fails to load;
+      * every failure comes back as JSON {"detail": ...} - never a bare 500 - and no temp file is left behind."""
     targets = {
         "enquiry": (enquiry, dp.ENQUIRY_FILE, _validate_enquiry_file),
         "stock": (stock, dp.STOCK_FILE, _validate_stock_file),
     }
-    os.makedirs(dp.DATA_DIR, exist_ok=True)
-    for name, (upload, dest_path, validate) in targets.items():
-        if upload is None or not upload.filename:
-            continue
-        if not upload.filename.lower().endswith((".xlsx", ".xlsm")):
-            raise HTTPException(400, f"'{name}' must be an .xlsx file, got '{upload.filename}'")
-        tmp_path = dest_path + ".uploading"
-        with open(tmp_path, "wb") as f:
-            shutil.copyfileobj(upload.file, f)
-        try:
-            validate(tmp_path)
-        except Exception as exc:
-            os.remove(tmp_path)
-            raise HTTPException(400, f"'{upload.filename}' was not loaded ({name}): {exc}. "
-                                     f"The previous {name} file is unchanged.")
-        os.replace(tmp_path, dest_path)
-        saved.append(name)
-        if name == "enquiry":
-            import stock_engine as se
-            if se.has_stock_sheets(dest_path):
-                # the new workbook brings its own stock: an older separate Stock.xlsx must not shadow it
-                # (a Stock.xlsx uploaded in the same request is saved afterwards and wins)
-                if os.path.exists(dp.STOCK_FILE):
-                    os.remove(dp.STOCK_FILE)
-                stock_from_workbook = True
-
-    if not saved:
+    if not any(u is not None and u.filename for u, _, _ in targets.values()):
         raise HTTPException(400, "No files were provided.")
+    os.makedirs(dp.DATA_DIR, exist_ok=True)
 
-    dp.store.reload()
+    if not _UPLOAD_LOCK.acquire(timeout=120):
+        raise HTTPException(409, "Another upload is still in progress - try again in a minute.")
+    tmp_files, backups, saved = [], {}, []
+    stock_from_workbook = False
+    try:
+        # ---- 1. save + validate everything first; nothing live is touched yet ----
+        staged = []
+        for name, (upload, dest_path, validate) in targets.items():
+            if upload is None or not upload.filename:
+                continue
+            if not upload.filename.lower().endswith((".xlsx", ".xlsm")):
+                raise HTTPException(400, f"'{name}' must be an .xlsx file, got '{upload.filename}'")
+            tmp_path = f"{dest_path}.{secrets.token_hex(4)}.uploading"      # unique: two uploads can't collide
+            tmp_files.append(tmp_path)
+            try:
+                _save_upload(upload, tmp_path)
+                validate(tmp_path)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, f"'{upload.filename}' was not loaded ({name}): {exc}. "
+                                         f"The previous {name} file is unchanged.")
+            staged.append((name, tmp_path, dest_path))
+
+        # ---- 2. swap into place, keeping a backup of whatever was there ----
+        try:
+            for name, tmp_path, dest_path in staged:
+                if os.path.exists(dest_path):
+                    bak = dest_path + ".bak"
+                    shutil.copy2(dest_path, bak)
+                    backups[dest_path] = bak
+                else:
+                    backups[dest_path] = None
+                _replace_with_retry(tmp_path, dest_path)
+                tmp_files.remove(tmp_path)
+                saved.append(name)
+                if name == "enquiry":
+                    import stock_engine as se
+                    if se.has_stock_sheets(dest_path) and os.path.exists(dp.STOCK_FILE) \
+                            and not any(n == "stock" for n, _, _ in staged):
+                        # the new workbook brings its own stock: an older separate Stock.xlsx must not shadow it
+                        if backups.get(dp.STOCK_FILE, "x") == "x":
+                            shutil.copy2(dp.STOCK_FILE, dp.STOCK_FILE + ".bak")
+                            backups[dp.STOCK_FILE] = dp.STOCK_FILE + ".bak"
+                        os.remove(dp.STOCK_FILE)
+                    if se.has_stock_sheets(dest_path):
+                        stock_from_workbook = True
+            dp.store.reload()
+        except Exception as exc:
+            # ---- 3. anything went wrong: put the previous files back and reload them ----
+            for dest_path, bak in backups.items():
+                try:
+                    if bak and os.path.exists(bak):
+                        _replace_with_retry(bak, dest_path)
+                    elif bak is None and os.path.exists(dest_path):
+                        os.remove(dest_path)
+                except Exception:
+                    if bak and os.path.exists(dest_path):
+                        _safe_remove(bak)      # the original was never replaced, so the backup is redundant
+            try:
+                dp.store.reload()
+            except Exception:
+                pass
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            raise HTTPException(500, f"The upload could not be applied: {detail}. Your previous data was restored.")
+        # success: backups are no longer needed
+        for bak in backups.values():
+            if bak:
+                _safe_remove(bak)
+    finally:
+        for t in tmp_files:
+            _safe_remove(t)
+        _UPLOAD_LOCK.release()
+
     warning = None
     if ("stock" in saved or stock_from_workbook) and dp.store.stock_info.get("warnings"):
         warning = " ".join(dp.store.stock_info["warnings"])

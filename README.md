@@ -1,3 +1,5 @@
+> **V19 – data sources:** one workbook, five sheets. **Enquiry** sheet → enquiries, test drives, follow-ups, appointed, lost/cancels, exchange · **Booked** sheet → Bookings (counted on Booking Date) · **Retail** sheet → Retails (counted on Invoice Date) · **Physical Stock** sheet → physical stock · **In Transit** sheet → in-transit stock. Bookings and Retails are no longer derived from `Enquiry Status`. A Booked-sheet booking that has a matching Retail-sheet row (same Customer ID + Model) counts as retailed; one without is "pending for delivery". If the workbook has no Booked / Retail sheet, the old Enquiry-Status logic is used as a fallback. Details the Booked / Retail sheets lack (fuel type, test drive, enquiry age) are looked up from the Enquiry sheet by Customer ID + Model.
+
 > Login/access setup for this version: see LOGIN_SETUP.md. Full/Limited screen access replaces the older optional Basic Auth setup. Limited users may view any consultant; no team mapping is used.
 
 # Hyundai ETBR Analysis
@@ -30,7 +32,7 @@ hyundai_dashboard/
 ├── start_dashboard.bat     Windows: double-click to install deps + run
 ├── start_dashboard.sh      macOS/Linux: same, from a terminal
 ├── data/
-│   ├── Enquiry.xlsx        ONE workbook: sheets 'Enquiry', 'Physical Stock', 'In Transit'
+│   ├── Enquiry.xlsx        ONE workbook: sheets 'Enquiry', 'Booked', 'Retail', 'Physical Stock', 'In Transit'
 │   └── Stock.xlsx          (optional) only if stock is kept in a separate file
 └── static/                 Frontend (index.html, css/style.css, js/app.js, js/vendor/chart.umd.js)
 ```
@@ -58,7 +60,7 @@ menu, KPI cards drop to 2 or 1 columns, and wide tables scroll inside their own 
 No code changes are needed. Either:
 
 1. **In the dashboard:** sidebar → **Update monthly data**, pick the new workbook
-   (Enquiry + Physical Stock + In Transit sheets), **Upload & recalculate**. A separate Stock.xlsx is optional. Each file is checked *before* it replaces
+   (Enquiry + Booked + Retail + Physical Stock + In Transit sheets), **Upload & recalculate**. A separate Stock.xlsx is optional. Each file is checked *before* it replaces
    the current one — a wrong file is rejected with a message and the existing data stays.
 2. **On disk:** replace the files in `data/` and click **Refresh**.
 

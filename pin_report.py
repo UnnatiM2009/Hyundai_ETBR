@@ -153,5 +153,5 @@ def compute_pin_records(metric: str, period: Optional[str], model=None, consulta
                 "test_drive": r["Test Drive"],
             })
     return {"metric": metric, "label": METRIC_LABELS[metric], "date_label": {
-        "Enquiry Date": "Enquiry date", "Booking Date": "Booking date",
+        "Enquiry Date": "Enquiry date", "Booking Date": "Booking date", "Booking Event Date": "Booking date",
         "Retail date": "Retail date", "Lost Date": "Cancel date"}[date_col], "rows": rows}
